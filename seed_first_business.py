@@ -1,10 +1,4 @@
 import argparse
-import sys
-from pathlib import Path
-
-
-DB_LAYER_DIR = Path(__file__).resolve().parent / "atlas_db_layer"
-sys.path.insert(0, str(DB_LAYER_DIR))
 
 from database import init_db, session_scope
 from repositories import BusinessRepository
