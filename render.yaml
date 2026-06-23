@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: atlas-receptionist
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn twilio_app:app
+    envVars:
+      - key: DB_AUTO_INIT
+        value: "1"
+      - key: TWILIO_TTS_VOICE
+        value: Polly.Brian-Generative
+      - key: TWILIO_TTS_LANGUAGE
+        value: en-GB
+      - key: PYTHON_VERSION
+        value: 3.11.9
