@@ -35,12 +35,24 @@ class BusinessRepository:
         )
         return self.session.execute(statement).scalar_one_or_none()
 
-    def create_business(self, name, twilio_number, assistant_name="Atlas", timezone="America/Chicago"):
+    def create_business(
+        self,
+        name,
+        twilio_number,
+        assistant_name="Atlas",
+        timezone="America/Chicago",
+        industry="hvac",
+        service_areas="",
+        notification_email="",
+    ):
         business = Business(
             name=name,
             greeting_name=name,
             assistant_name=assistant_name,
             timezone=timezone,
+            industry=industry,
+            service_areas=service_areas,
+            notification_email=notification_email,
         )
         self.session.add(business)
         self.session.flush()
@@ -85,6 +97,23 @@ class CustomerRepository:
         self.session.flush()
         return customer
 
+    def update_customer_details(self, customer_id, name="", email="", service_address=""):
+        customer = self.session.get(Customer, customer_id)
+        if not customer:
+            return None
+
+        name_parts = (name or "").split()
+        if name_parts:
+            customer.first_name = name_parts[0]
+            customer.last_name = " ".join(name_parts[1:])
+        if email:
+            customer.email = email
+        if service_address:
+            customer.last_service_address = service_address
+
+        self.session.flush()
+        return customer
+
 
 class CallRepository:
     def __init__(self, session: Session):
@@ -103,6 +132,10 @@ class CallRepository:
         self.session.add(call)
         self.session.flush()
         return call
+
+    def get_by_call_sid(self, call_sid):
+        statement = select(Call).where(Call.twilio_call_sid == call_sid)
+        return self.session.execute(statement).scalar_one_or_none()
 
 
 class ServiceRequestRepository:
@@ -123,6 +156,37 @@ class ServiceRequestRepository:
             sms_review_required=bool(lead.get("sms_review_required")),
         )
         self.session.add(request)
+        self.session.flush()
+        return request
+
+    def get_by_call_id(self, call_id):
+        statement = (
+            select(ServiceRequest)
+            .where(ServiceRequest.call_id == call_id)
+            .order_by(ServiceRequest.id.desc())
+        )
+        return self.session.execute(statement).scalars().first()
+
+    def update_review_details(
+        self,
+        service_request_id,
+        service_address="",
+        issue_summary="",
+        preferred_time="",
+    ):
+        request = self.session.get(ServiceRequest, service_request_id)
+        if not request:
+            return None
+
+        if service_address:
+            request.service_address = service_address
+        if issue_summary:
+            request.issue_summary = issue_summary
+        if preferred_time:
+            request.preferred_time = preferred_time
+        request.sms_review_required = False
+        request.status = "reviewed"
+
         self.session.flush()
         return request
 
