@@ -1,7 +1,10 @@
 import json
 import os
+import smtplib
 import sys
 import threading
+from email.message import EmailMessage
+from html import escape
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,7 +18,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-github-render-ready-2026-06-23"
+TWILIO_APP_VERSION = "atlas-no-sms-email-notify-2026-06-30"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -41,6 +44,13 @@ TWILIO_TTS_VOICE = os.getenv("TWILIO_TTS_VOICE", "Polly.Brian-Generative")
 TWILIO_TTS_LANGUAGE = os.getenv("TWILIO_TTS_LANGUAGE", "en-GB")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 REVIEW_BASE_URL = os.getenv("REVIEW_BASE_URL", PUBLIC_BASE_URL).rstrip("/")
+SMS_FOLLOWUP_ENABLED = os.getenv("SMS_FOLLOWUP_ENABLED", "0") == "1"
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USERNAME)
+BUSINESS_NOTIFICATION_EMAIL = os.getenv("BUSINESS_NOTIFICATION_EMAIL", "")
 OUTPUT_DIR = Path(__file__).resolve().parent
 DB_LAYER_DIR = OUTPUT_DIR / "atlas_db_layer"
 if DB_LAYER_DIR.exists():
@@ -54,6 +64,7 @@ try:
         get_business_config_for_call,
     )
     from database import init_db, session_scope
+    from models import Customer
     from repositories import (
         AppointmentRequestRepository,
         CallRepository,
@@ -70,6 +81,7 @@ except Exception as exc:
     get_business_config_for_call = None
     init_db = None
     session_scope = None
+    Customer = None
     AppointmentRequestRepository = None
     CallRepository = None
     CustomerRepository = None
@@ -250,7 +262,7 @@ def apply_voice_channel_shortcuts(bot, prompt):
     if bot.current_step != "email":
         return prompt
 
-    bot.lead["email"] = "Can add by SMS"
+    bot.lead["email"] = "Not collected by phone"
     next_prompt = bot.next_question()
     return next_prompt
 
@@ -310,7 +322,7 @@ def build_twiml(prompt, bot, call_sid):
             timeout=10,
             action_on_empty_result=False,
         )
-        say(gather, "Please enter the best phone number for text confirmation, including area code.")
+        say(gather, "Please enter the best callback phone number, including area code.")
         response.append(gather)
         say(response, "I missed the phone number. Let me ask that again.")
         response.redirect(f"/repeat/{call_sid}", method="POST")
@@ -383,6 +395,11 @@ def build_review_url(call_sid):
 
 
 def send_review_sms(bot, call_sid):
+    if not SMS_FOLLOWUP_ENABLED:
+        print("[SMS DISABLED] SMS follow-up is disabled for this deployment.")
+        bot.lead["sms_sent"] = False
+        return False
+
     if not bot.lead.get("phone_confirmed") or not bot.lead.get("phone"):
         print("[SMS SKIPPED] Phone number is not confirmed.")
         bot.lead["sms_sent"] = False
@@ -400,10 +417,11 @@ def send_review_sms(bot, call_sid):
         return False
 
     review_url = build_review_url(call_sid)
+    company_name = bot.lead.get("company_name") or "Atlas"
     if review_url:
-        body = f"ABC Heating & Air: Review or update your request here: {review_url}"
+        body = f"{company_name}: Review or update your request here: {review_url}"
     else:
-        body = "ABC Heating & Air: We received your request. Reply with any corrections or updates."
+        body = f"{company_name}: We received your request. Reply with any corrections or updates."
 
     client.messages.create(
         body=body,
@@ -412,6 +430,96 @@ def send_review_sms(bot, call_sid):
     )
     bot.lead["sms_sent"] = True
     return True
+
+
+def get_company_name_for_form_payload(form_payload):
+    if not DB_AVAILABLE:
+        return "Atlas"
+
+    try:
+        with session_scope() as db_session:
+            business_config = get_business_config_for_call(db_session, form_payload.get("To", ""))
+            return business_config.company_name or "Atlas"
+    except Exception as exc:
+        print("[DB COMPANY LOOKUP ERROR]", repr(exc))
+        return "Atlas"
+
+
+def get_business_config_for_form_payload(form_payload):
+    if not DB_AVAILABLE:
+        return None
+
+    try:
+        with session_scope() as db_session:
+            return get_business_config_for_call(db_session, form_payload.get("To", ""))
+    except Exception as exc:
+        print("[DB BUSINESS LOOKUP ERROR]", repr(exc))
+        return None
+
+
+def get_notification_email_for_form_payload(form_payload):
+    business_config = get_business_config_for_form_payload(form_payload)
+    if business_config and business_config.notification_email:
+        return business_config.notification_email
+    return BUSINESS_NOTIFICATION_EMAIL
+
+
+def build_notification_email_body(call_sid, lead, transcript, form_payload):
+    lines = [
+        f"Atlas captured a completed call for {lead.get('company_name', 'the business')}.",
+        "",
+        f"Call SID: {call_sid}",
+        f"From: {form_payload.get('From', '')}",
+        f"To: {form_payload.get('To', '')}",
+        "",
+        "Lead details:",
+        f"Name: {lead.get('name', '')}",
+        f"Phone: {lead.get('phone', '')}",
+        f"Email: {lead.get('email', '')}",
+        f"Service address: {lead.get('address', '')}",
+        f"Category: {lead.get('category', '')}",
+        f"Priority: {lead.get('priority', '')}",
+        f"Reason: {lead.get('issue_summary') or lead.get('issue') or ''}",
+        f"System/status detail: {lead.get('system_status', '')}",
+        f"Preferred time: {lead.get('preferred_time', '')}",
+        f"Needs team review: {lead.get('sms_review_required') or lead.get('possible_transcription_error')}",
+        "",
+        "Transcript:",
+    ]
+    for turn in transcript or []:
+        if turn.get("customer") is not None:
+            lines.append(f"Customer: {turn['customer']}")
+        if turn.get("receptionist") is not None:
+            lines.append(f"Atlas: {turn['receptionist']}")
+    return "\n".join(lines)
+
+
+def send_business_notification_email(call_sid, lead, transcript, form_payload):
+    to_email = get_notification_email_for_form_payload(form_payload)
+    if not to_email:
+        print("[EMAIL SKIPPED] BUSINESS_NOTIFICATION_EMAIL or business notification email is missing.")
+        return False
+    if not SMTP_HOST or not SMTP_FROM_EMAIL:
+        print("[EMAIL SKIPPED] SMTP_HOST and SMTP_FROM_EMAIL/SMTP_USERNAME are required.")
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = f"New Atlas call: {lead.get('name') or form_payload.get('From', 'unknown caller')}"
+    message["From"] = SMTP_FROM_EMAIL
+    message["To"] = to_email
+    message.set_content(build_notification_email_body(call_sid, lead, transcript, form_payload))
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+            smtp.starttls()
+            if SMTP_USERNAME and SMTP_PASSWORD:
+                smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(message)
+        print("[EMAIL SENT]", {"to": to_email, "call_sid": call_sid})
+        return True
+    except Exception as exc:
+        print("[EMAIL ERROR]", repr(exc))
+        return False
 
 
 def save_completed_call_to_database(call_sid, lead, transcript, form_payload):
@@ -424,6 +532,7 @@ def save_completed_call_to_database(call_sid, lead, transcript, form_payload):
             if not business_config.business_id:
                 print("[DB SKIPPED] No active business matched this Twilio number.")
                 return False
+            lead["company_name"] = business_config.company_name
 
             customer = CustomerRepository(db_session).get_or_create_from_lead(
                 business_config.business_id,
@@ -520,6 +629,7 @@ def complete_call_after_response(call_sid, lead, transcript, form_payload):
         pass
 
     bot_snapshot = LeadSnapshot()
+    lead["company_name"] = lead.get("company_name") or get_company_name_for_form_payload(form_payload)
     bot_snapshot.lead = lead
     try:
         send_review_sms(bot_snapshot, call_sid)
@@ -531,6 +641,7 @@ def complete_call_after_response(call_sid, lead, transcript, form_payload):
     save_lead_snapshot(call_sid, lead, transcript, form_payload)
     save_transcript_snapshot(call_sid, lead, transcript, form_payload)
     save_completed_call_to_database(call_sid, lead, transcript, form_payload)
+    send_business_notification_email(call_sid, lead, transcript, form_payload)
 
 
 @app.route("/health", methods=["GET"])
@@ -671,11 +782,129 @@ def gather():
 
 @app.route("/review/<call_sid>", methods=["GET"])
 def review(call_sid):
-    return {
-        "message": "This is a placeholder review endpoint.",
-        "call_sid": call_sid,
-        "next_step": "Replace this with a customer-facing form to edit lead details.",
-    }
+    if not DB_AVAILABLE:
+        return Response(
+            "<h1>Review unavailable</h1><p>The database is not connected right now.</p>",
+            mimetype="text/html",
+            status=503,
+        )
+
+    try:
+        with session_scope() as db_session:
+            call = CallRepository(db_session).get_by_call_sid(call_sid)
+            if not call:
+                return Response(
+                    "<h1>Review not ready</h1><p>Please try this link again in a moment.</p>",
+                    mimetype="text/html",
+                    status=404,
+                )
+            customer = db_session.get(Customer, call.customer_id)
+            service_request = ServiceRequestRepository(db_session).get_by_call_id(call.id)
+            if not customer:
+                return Response(
+                    "<h1>Review not found</h1><p>We could not find the customer for this request.</p>",
+                    mimetype="text/html",
+                    status=404,
+                )
+            full_name = " ".join(
+                part for part in [customer.first_name, customer.last_name] if part
+            ).strip()
+            html = f"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review Your Request</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 0; padding: 24px; background: #f6f7f9; color: #17202a; }}
+    main {{ max-width: 640px; margin: 0 auto; background: white; padding: 24px; border: 1px solid #d9dee7; }}
+    label {{ display: block; font-weight: 700; margin-top: 16px; }}
+    input, textarea {{ width: 100%; box-sizing: border-box; padding: 12px; margin-top: 6px; border: 1px solid #b8c0cc; font-size: 16px; }}
+    textarea {{ min-height: 96px; }}
+    button {{ margin-top: 20px; padding: 12px 16px; font-size: 16px; border: 0; background: #174ea6; color: white; cursor: pointer; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Review Your Request</h1>
+    <form method="post">
+      <label for="name">Name</label>
+      <input id="name" name="name" value="{escape(full_name)}">
+
+      <label for="service_address">Service address</label>
+      <input id="service_address" name="service_address" value="{escape(service_request.service_address if service_request else '')}">
+
+      <label for="email">Email</label>
+      <input id="email" name="email" value="{escape(customer.email)}">
+
+      <label for="issue_summary">Service notes</label>
+      <textarea id="issue_summary" name="issue_summary">{escape(service_request.issue_summary if service_request else '')}</textarea>
+
+      <label for="preferred_time">Preferred follow-up time</label>
+      <input id="preferred_time" name="preferred_time" value="{escape(service_request.preferred_time if service_request else '')}">
+
+      <button type="submit">Save Updates</button>
+    </form>
+  </main>
+</body>
+</html>
+"""
+            return Response(html, mimetype="text/html")
+    except Exception as exc:
+        print("[REVIEW ERROR]", repr(exc))
+        return Response(
+            "<h1>Review unavailable</h1><p>We could not load this request.</p>",
+            mimetype="text/html",
+            status=500,
+        )
+
+
+@app.route("/review/<call_sid>", methods=["POST"])
+def review_update(call_sid):
+    if not DB_AVAILABLE:
+        return Response(
+            "<h1>Review unavailable</h1><p>The database is not connected right now.</p>",
+            mimetype="text/html",
+            status=503,
+        )
+
+    try:
+        with session_scope() as db_session:
+            call = CallRepository(db_session).get_by_call_sid(call_sid)
+            if not call:
+                return Response(
+                    "<h1>Review not found</h1><p>We could not find this request.</p>",
+                    mimetype="text/html",
+                    status=404,
+                )
+
+            service_request = ServiceRequestRepository(db_session).get_by_call_id(call.id)
+            CustomerRepository(db_session).update_customer_details(
+                call.customer_id,
+                name=request.form.get("name", "").strip(),
+                email=request.form.get("email", "").strip(),
+                service_address=request.form.get("service_address", "").strip(),
+            )
+            if service_request:
+                ServiceRequestRepository(db_session).update_review_details(
+                    service_request.id,
+                    service_address=request.form.get("service_address", "").strip(),
+                    issue_summary=request.form.get("issue_summary", "").strip(),
+                    preferred_time=request.form.get("preferred_time", "").strip(),
+                )
+            print("[REVIEW UPDATED]", {"call_sid": call_sid, "call_id": call.id})
+            return Response(
+                "<h1>Updates saved</h1><p>Thank you. We updated your request for the team.</p>",
+                mimetype="text/html",
+            )
+    except Exception as exc:
+        print("[REVIEW UPDATE ERROR]", repr(exc))
+        return Response(
+            "<h1>Update failed</h1><p>We could not save your changes. Please call the team directly.</p>",
+            mimetype="text/html",
+            status=500,
+        )
 
 
 @app.route("/transcripts", methods=["GET"])
