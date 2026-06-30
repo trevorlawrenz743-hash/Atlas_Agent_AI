@@ -1,6 +1,8 @@
 import re
 from datetime import datetime
 
+from industry_profiles import get_industry_profile
+
 
 class AIReceptionist:
     DIALOGUE_VERSION = "atlas-address-two-try-2026-06-19"
@@ -24,6 +26,8 @@ class AIReceptionist:
                 "Austin, Round Rock, Cedar Park, Pflugerville, Georgetown, "
                 "downtown Austin, and nearby areas"
             ),
+            "industry": "hvac",
+            "assistant_name": "Atlas",
         }
 
         self.lead = {
@@ -96,6 +100,14 @@ class AIReceptionist:
 
     def is_valid_name(self, name):
         bad_words = {
+            "yes",
+            "yeah",
+            "yep",
+            "sure",
+            "okay",
+            "ok",
+            "um",
+            "uh",
             "phone",
             "email",
             "quote",
@@ -125,6 +137,42 @@ class AIReceptionist:
         parts = self.normalize(name).split()
         return 2 <= len(parts) <= 4 and not any(word in bad_words for word in parts)
 
+    def clean_name_candidate(self, name):
+        candidate = re.sub(r"[^a-zA-Z\s]", " ", name).strip()
+        candidate = re.sub(r"\s+", " ", candidate)
+        filler_prefixes = [
+            "yes",
+            "yeah",
+            "yep",
+            "sure",
+            "okay",
+            "ok",
+            "absolutely",
+            "um",
+            "uh",
+            "so",
+            "hello",
+            "hi",
+            "my name is",
+            "name is",
+            "this is",
+            "i am",
+            "im",
+            "i m",
+        ]
+        changed = True
+        while changed:
+            changed = False
+            lower = candidate.lower()
+            for prefix in filler_prefixes:
+                if lower == prefix:
+                    return ""
+                if lower.startswith(prefix + " "):
+                    candidate = candidate[len(prefix) :].strip()
+                    changed = True
+                    break
+        return candidate
+
     def extract_name(self, msg):
         patterns = [
             r"my name is ([a-zA-Z\s]+?)(?:,| and |$)",
@@ -137,13 +185,12 @@ class AIReceptionist:
         for pattern in patterns:
             match = re.search(pattern, msg, re.IGNORECASE)
             if match:
-                candidate = re.sub(r"\s+", " ", match.group(1).strip())
+                candidate = self.clean_name_candidate(match.group(1))
                 if self.is_valid_name(candidate):
                     return candidate.title()
 
         if self.current_step == "name":
-            candidate = re.sub(r"[^a-zA-Z\s]", "", msg).strip()
-            candidate = re.sub(r"\s+", " ", candidate)
+            candidate = self.clean_name_candidate(msg)
             if self.is_valid_name(candidate):
                 return candidate.title()
 
@@ -225,6 +272,7 @@ class AIReceptionist:
     # -------------------------
     def classify_issue(self, msg):
         text = self.normalize(msg)
+        profile = get_industry_profile(self.company_info.get("industry"))
 
         if self.is_dangerous_issue(text):
             self.lead["danger_flag"] = True
@@ -240,13 +288,13 @@ class AIReceptionist:
             return self.apply_classification("Billing", "Normal", "Billing/payment language.")
 
         if self.contains_any(text, ["complaint", "upset", "bad service", "never showed", "missed appointment"]):
-            priority = "High" if self.contains_any(text, ["no ac", "no air", "no heat", "not cooling"]) else "Normal"
+            priority = "High" if self.contains_any(text, profile["high_priority_keywords"]) else "Normal"
             return self.apply_classification("Complaint", priority, "Complaint or missed appointment language.")
 
-        if self.contains_any(text, ["quote", "estimate", "new unit", "replace", "replacement", "install", "installation", "upgrade"]):
+        if self.contains_any(text, profile["sales_keywords"]):
             return self.apply_classification("Sales", "Normal", "Quote, replacement, or installation language.")
 
-        if self.contains_any(text, ["no ac", "no air", "no heat", "not cooling", "not heating", "leak", "water leaking", "stopped working", "broken", "repair", "loud noise", "making noise", "100 degrees", "hot in the house", "hot inside", "completely out", "system is out", "ac is out"]):
+        if self.contains_any(text, profile["support_keywords"]):
             priority = "High" if self.is_likely_emergency(text) else "Normal"
             return self.apply_classification("Support", priority, "Repair or active system problem.")
 
@@ -256,44 +304,12 @@ class AIReceptionist:
         return self.apply_classification("General Inquiry", "Normal", "Could not confidently classify.")
 
     def is_likely_emergency(self, text):
-        high_priority_phrases = [
-            "no ac",
-            "no air",
-            "no heat",
-            "completely out",
-            "stopped working",
-            "water leaking",
-            "flood",
-            "burning smell",
-            "smell burning",
-            "electrical smell",
-            "gas smell",
-            "smell gas",
-            "sparking",
-            "emergency",
-            "urgent",
-            "asap",
-            "over 90 inside",
-            "over 100",
-            "100 degrees",
-            "hot in the house",
-            "hot inside",
-        ]
-        return any(phrase in text for phrase in high_priority_phrases)
+        profile = get_industry_profile(self.company_info.get("industry"))
+        return any(phrase in text for phrase in profile["high_priority_keywords"])
 
     def is_dangerous_issue(self, text):
-        danger_phrases = [
-            "burning smell",
-            "smell burning",
-            "electrical smell",
-            "sparking",
-            "smoke",
-            "gas smell",
-            "smell gas",
-            "carbon monoxide",
-            "co alarm",
-        ]
-        return any(phrase in text for phrase in danger_phrases)
+        profile = get_industry_profile(self.company_info.get("industry"))
+        return any(phrase in text for phrase in profile["danger_keywords"])
 
     def apply_classification(self, category, priority, reason):
         self.lead["category"] = category
@@ -499,12 +515,12 @@ class AIReceptionist:
             elif self.lead["category"] == "Sales" and self.looks_like_service_location(msg):
                 self.lead["address"] = msg.strip()
             elif self.address_prompt_count >= 2:
-                self.lead["address"] = self.address_candidate or msg.strip() or "Review by SMS"
+                self.lead["address"] = self.address_candidate or msg.strip() or "Needs team review"
                 self.lead["possible_transcription_error"] = True
                 self.lead["sms_review_required"] = True
                 return (
-                    "No problem, we can have you review or update the service location "
-                    "in the follow-up text message. "
+                    "No problem, I will flag the service location for the team to confirm "
+                    "when they follow up. "
                     + self.next_question()
                 )
             else:
@@ -571,10 +587,7 @@ class AIReceptionist:
             safety_note = ""
             if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
                 self.lead["safety_note_given"] = True
-                safety_note = (
-                    " If there is smoke, sparking, a gas smell, or immediate danger, "
-                    "please leave the area and contact emergency services."
-                )
+                safety_note = get_industry_profile(self.company_info.get("industry"))["safety_note"]
             return (
                 "Oh no, that sounds miserable. I am glad you called. "
                 "Let me get the essentials so the right person can help."
@@ -632,20 +645,21 @@ class AIReceptionist:
         )
 
     def prompt_for_system_status(self):
+        profile = get_industry_profile(self.company_info.get("industry"))
         if self.lead["priority"] == "High":
             return (
                 "That helps. One quick detail will help the team understand how urgent this is before they call: "
-                "is the system completely out, or is it running but not keeping up?"
+                + profile["status_question_high"]
             )
         return (
             "That helps. One quick detail gives the technician a better starting point: "
-            "is the system completely out, or is it running but not keeping up?"
+            + profile["status_question_normal"]
         )
 
     def prompt_for_email(self):
         return (
             "If you have an email handy, we can add it for follow-up. "
-            "You can also say skip and review it by text."
+            "You can also say skip."
         )
 
     def prompt_for_preferred_time(self):
@@ -678,10 +692,7 @@ class AIReceptionist:
             safety_note = ""
             if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
                 self.lead["safety_note_given"] = True
-                safety_note = (
-                    " If there is smoke, sparking, a gas smell, or immediate danger, "
-                    "please leave the area and contact emergency services."
-                )
+                safety_note = get_industry_profile(self.company_info.get("industry"))["safety_note"]
             if self.lead["priority"] == "High":
                 return "I am sorry you are dealing with that. I will mark this as a high-priority service issue." + safety_note
             return "I am sorry you are dealing with that. I will get this noted for the service team." + safety_note
@@ -712,7 +723,7 @@ class AIReceptionist:
         if any(phrase == text or phrase in text for phrase in negative):
             self.lead["possible_transcription_error"] = True
             self.lead["sms_review_required"] = True
-            self.lead["verification_status"] = "Needs SMS Review"
+            self.lead["verification_status"] = "Needs Team Review"
             return self.submit_request()
 
         self.apply_update(msg)
@@ -796,35 +807,15 @@ class AIReceptionist:
     def submit_request(self):
         self.current_step = "complete"
         reason = self.lead["issue_summary"] or self.lead["issue"] or "your request"
-        email_already_available = (
-            bool(self.lead["email"])
-            and self.lead["email"] not in {"Skipped", "Can add by SMS", "Review by SMS"}
-        )
-        should_explain_email_value = (
-            self.lead["customer_type"] != "Returning" and not email_already_available
-        )
-        sms_message = (
-            "I am also sending a text message where you can review and update the important details, "
-            "including your service address, contact information, service notes, and email."
-        )
-        email_value_message = ""
-        if should_explain_email_value:
-            email_value_message = (
-                " Adding an email is valuable because it gives the team a reliable place to send estimates, receipts, "
-                "photos, written recommendations, financing information, or appointment details without relying only on a phone call."
-            )
         appreciation = (
             "Thank you so much for calling us today. We appreciate your business and value your time."
         )
         if self.lead["sms_review_required"]:
             self.lead["verified"] = False
-            self.lead["verification_status"] = "Needs SMS Review"
+            self.lead["verification_status"] = "Needs Team Review"
             closing_message = (
                 f"I have your reason for calling noted as: {reason}. "
-                "I have submitted the request so the team has it. "
-                + sms_message
-                + email_value_message
-                + " "
+                "I have submitted the request so the team has it, and I flagged anything that may need confirmation. "
                 + appreciation
             )
         else:
@@ -833,15 +824,11 @@ class AIReceptionist:
             closing_message = (
                 f"I have your reason for calling noted as: {reason}. "
                 "I have submitted your request, and the team will follow up soon. "
-                + sms_message
-                + email_value_message
-                + " "
                 + appreciation
             )
 
         if not self.lead["sms_sent"]:
-            self.lead["sms_sent"] = True
-            print("[SMS READY] Send SMS confirmation here.")
+            self.lead["sms_sent"] = False
 
         return closing_message
 
