@@ -19,6 +19,8 @@ class Business(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     assistant_name: Mapped[str] = mapped_column(String(80), default="Atlas", nullable=False)
     greeting_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    industry: Mapped[str] = mapped_column(String(80), default="hvac", nullable=False)
+    notification_email: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     timezone: Mapped[str] = mapped_column(String(80), default="America/Chicago", nullable=False)
     service_areas: Mapped[str] = mapped_column(Text, default="", nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
