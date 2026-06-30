@@ -21,7 +21,7 @@ DEFAULT_BUSINESS_CONFIG = BusinessConfig(
     assistant_name="Atlas",
     greeting_name="ABC Heating & Air",
     industry="hvac",
-    notification_email="trevorlawrenz743@gmail.com",
+    notification_email="",
     timezone="America/Chicago",
     service_areas="Austin, Round Rock, Cedar Park, Pflugerville, Georgetown, and nearby areas",
 )
