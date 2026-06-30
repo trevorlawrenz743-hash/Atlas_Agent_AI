@@ -3,6 +3,8 @@ CREATE TABLE businesses (
     name VARCHAR(255) NOT NULL,
     assistant_name VARCHAR(80) NOT NULL DEFAULT 'Atlas',
     greeting_name VARCHAR(255) NOT NULL,
+    industry VARCHAR(80) NOT NULL DEFAULT 'hvac',
+    notification_email VARCHAR(255) NOT NULL DEFAULT '',
     timezone VARCHAR(80) NOT NULL DEFAULT 'America/Chicago',
     service_areas TEXT NOT NULL DEFAULT '',
     active BOOLEAN NOT NULL DEFAULT TRUE,
