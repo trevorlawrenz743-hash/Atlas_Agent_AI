@@ -1,7 +1,7 @@
 import os
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from models import Base
@@ -36,6 +36,25 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    ensure_lightweight_migrations()
+
+
+def ensure_lightweight_migrations():
+    inspector = inspect(engine)
+    if "businesses" not in inspector.get_table_names():
+        return
+
+    business_columns = {column["name"] for column in inspector.get_columns("businesses")}
+    if "industry" not in business_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE businesses ADD COLUMN industry VARCHAR(80) NOT NULL DEFAULT 'hvac'")
+            )
+    if "notification_email" not in business_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE businesses ADD COLUMN notification_email VARCHAR(255) NOT NULL DEFAULT ''")
+            )
 
 
 @contextmanager
@@ -57,3 +76,4 @@ def get_session():
         yield session
     finally:
         session.close()
+
