@@ -459,8 +459,9 @@ def get_business_config_for_form_payload(form_payload):
 
 def get_notification_email_for_form_payload(form_payload):
     business_config = get_business_config_for_form_payload(form_payload)
-    if business_config and business_config.notification_email:
-        return business_config.notification_email
+    business_notification_email = getattr(business_config, "notification_email", "")
+    if business_notification_email:
+        return business_notification_email
     return BUSINESS_NOTIFICATION_EMAIL
 
 
