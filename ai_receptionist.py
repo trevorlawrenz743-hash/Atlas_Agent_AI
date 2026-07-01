@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-correction-patterns-2026-07-01"
+    DIALOGUE_VERSION = "atlas-auto-submit-email-2026-07-01"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -640,11 +640,6 @@ class AIReceptionist:
             self.current_step = "preferred_time"
             return self.prompt_for_preferred_time()
 
-        if not self.awaiting_confirmation:
-            self.current_step = "confirmation"
-            self.awaiting_confirmation = True
-            return self.build_confirmation()
-
         return self.submit_request()
 
     def prompt_for_name(self):
@@ -995,6 +990,7 @@ class AIReceptionist:
                 f"I have your reason for calling noted as: {reason}. "
                 "I have submitted the request so the team has it, and I flagged anything that may need confirmation. "
                 + appreciation
+                + " Goodbye."
             )
         else:
             self.lead["verified"] = True
@@ -1003,6 +999,7 @@ class AIReceptionist:
                 f"I have your reason for calling noted as: {reason}. "
                 "I have submitted your request, and the team will follow up soon. "
                 + appreciation
+                + " Goodbye."
             )
 
         if not self.lead["sms_sent"]:
