@@ -20,7 +20,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-business-email-api-2026-07-01"
+TWILIO_APP_VERSION = "atlas-auto-submit-email-2026-07-01"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -37,6 +37,7 @@ print("TWILIO PHONE NUMBER FOUND:", bool(os.getenv("TWILIO_PHONE_NUMBER")))
 app = Flask(__name__)
 
 sessions = {}
+completed_call_sids = set()
 
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -55,6 +56,16 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USERNAME)
 BUSINESS_NOTIFICATION_EMAIL = os.getenv("BUSINESS_NOTIFICATION_EMAIL", "")
+print(
+    "[EMAIL CONFIG]",
+    {
+        "provider": EMAIL_PROVIDER,
+        "resend_api_key_found": bool(RESEND_API_KEY),
+        "smtp_host_found": bool(SMTP_HOST),
+        "from_email_found": bool(SMTP_FROM_EMAIL),
+        "fallback_business_email_found": bool(BUSINESS_NOTIFICATION_EMAIL),
+    },
+)
 OUTPUT_DIR = Path(__file__).resolve().parent
 DB_LAYER_DIR = OUTPUT_DIR / "atlas_db_layer"
 if DB_LAYER_DIR.exists():
@@ -252,6 +263,29 @@ def add_transcript_turn(call_sid, customer=None, receptionist=None, metadata=Non
 def remember_prompt(call_sid, prompt):
     if call_sid in sessions:
         sessions[call_sid]["last_prompt"] = prompt
+
+
+def lead_has_minimum_for_business_email(bot):
+    return bool(
+        bot.lead.get("phone_confirmed")
+        and bot.lead.get("phone")
+        and (bot.lead.get("issue_summary") or bot.lead.get("issue"))
+    )
+
+
+def force_complete_with_current_lead(bot):
+    if bot.current_step == "complete":
+        return bot.submit_request()
+
+    bot.lead["possible_transcription_error"] = True
+    bot.lead["sms_review_required"] = True
+    if not bot.lead.get("preferred_time"):
+        bot.lead["preferred_time"] = "Not collected by phone"
+    if not bot.lead.get("address"):
+        bot.lead["address"] = "Needs team review"
+    if not bot.lead.get("system_status") and bot.lead.get("category") == "Support":
+        bot.lead["system_status"] = "Needs team review"
+    return bot.submit_request()
 
 
 def log_bot_dialogue(call_sid, prompt, step, source):
@@ -519,7 +553,9 @@ def send_business_notification_email_via_resend(to_email, subject, body):
         data=payload,
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Accept": "application/json",
             "Content-Type": "application/json",
+            "User-Agent": "Atlas-Agent-AI/1.0",
         },
         method="POST",
     )
@@ -684,6 +720,16 @@ def save_transcript_snapshot(call_sid, lead, transcript, form_payload):
 
 
 def complete_call_after_response(call_sid, lead, transcript, form_payload):
+    print(
+        "[CALL COMPLETION START]",
+        {
+            "call_sid": call_sid,
+            "email_provider": EMAIL_PROVIDER,
+            "lead_name": lead.get("name"),
+            "reason": lead.get("issue_summary") or lead.get("issue"),
+        },
+    )
+
     class LeadSnapshot:
         pass
 
@@ -726,6 +772,11 @@ def health():
         "tts_language": TWILIO_TTS_LANGUAGE,
         "database_layer_available": DB_AVAILABLE,
         "database_import_error": DB_IMPORT_ERROR,
+        "email_provider": EMAIL_PROVIDER,
+        "resend_api_key_found": bool(RESEND_API_KEY),
+        "smtp_host_found": bool(SMTP_HOST),
+        "from_email_found": bool(SMTP_FROM_EMAIL),
+        "fallback_business_email_found": bool(BUSINESS_NOTIFICATION_EMAIL),
     }
 
 
@@ -740,6 +791,11 @@ def version():
         "tts_language": TWILIO_TTS_LANGUAGE,
         "database_layer_available": DB_AVAILABLE,
         "database_import_error": DB_IMPORT_ERROR,
+        "email_provider": EMAIL_PROVIDER,
+        "resend_api_key_found": bool(RESEND_API_KEY),
+        "smtp_host_found": bool(SMTP_HOST),
+        "from_email_found": bool(SMTP_FROM_EMAIL),
+        "fallback_business_email_found": bool(BUSINESS_NOTIFICATION_EMAIL),
     }
 
 
@@ -786,11 +842,49 @@ def repeat(call_sid):
 @app.route("/gather", methods=["POST"])
 def gather():
     call_sid = get_call_sid()
+    if call_sid in completed_call_sids:
+        response = VoiceResponse()
+        say(response, "Your request has already been submitted. Goodbye.")
+        response.hangup()
+        return xml_response(response)
+
     bot = get_or_create_bot(call_sid)
     setup_call_context(call_sid, bot)
     inbound = normalize_inbound_for_step(bot)
 
     if not inbound:
+        if lead_has_minimum_for_business_email(bot):
+            prompt = force_complete_with_current_lead(bot)
+            prompt = apply_voice_channel_shortcuts(bot, prompt)
+            remember_prompt(call_sid, prompt)
+            log_bot_dialogue(call_sid, prompt, bot.current_step, "empty-gather-auto-complete")
+            add_transcript_turn(
+                call_sid,
+                customer="[no response captured]",
+                receptionist=prompt,
+                metadata={"step": bot.current_step, "auto_completed": True},
+            )
+            lead_snapshot = dict(bot.lead)
+            transcript_snapshot = list(sessions.get(call_sid, {}).get("transcript", []))
+            form_payload = dict(request.form)
+            print(
+                "[CALL AUTO COMPLETE TRIGGER]",
+                {
+                    "call_sid": call_sid,
+                    "email_provider": EMAIL_PROVIDER,
+                    "resend_api_key_found": bool(RESEND_API_KEY),
+                    "fallback_business_email_found": bool(BUSINESS_NOTIFICATION_EMAIL),
+                },
+            )
+            threading.Thread(
+                target=complete_call_after_response,
+                args=(call_sid, lead_snapshot, transcript_snapshot, form_payload),
+                daemon=False,
+            ).start()
+            completed_call_sids.add(call_sid)
+            sessions.pop(call_sid, None)
+            return xml_response(build_twiml(prompt, bot, call_sid))
+
         prompt = sessions.get(call_sid, {}).get("last_prompt") or "I missed that. Could you say that again?"
         log_bot_dialogue(call_sid, prompt, bot.current_step, "empty-gather-repeat")
         return xml_response(build_twiml(prompt, bot, call_sid))
@@ -835,11 +929,21 @@ def gather():
         lead_snapshot = dict(bot.lead)
         transcript_snapshot = list(sessions.get(call_sid, {}).get("transcript", []))
         form_payload = dict(request.form)
+        print(
+            "[CALL COMPLETE TRIGGER]",
+            {
+                "call_sid": call_sid,
+                "email_provider": EMAIL_PROVIDER,
+                "resend_api_key_found": bool(RESEND_API_KEY),
+                "fallback_business_email_found": bool(BUSINESS_NOTIFICATION_EMAIL),
+            },
+        )
         threading.Thread(
             target=complete_call_after_response,
             args=(call_sid, lead_snapshot, transcript_snapshot, form_payload),
-            daemon=True,
+            daemon=False,
         ).start()
+        completed_call_sids.add(call_sid)
         sessions.pop(call_sid, None)
 
     return xml_response(build_twiml(prompt, bot, call_sid))
