@@ -3,6 +3,8 @@ import os
 import smtplib
 import sys
 import threading
+from urllib import request as url_request
+from urllib.error import HTTPError, URLError
 from email.message import EmailMessage
 from html import escape
 from pathlib import Path
@@ -18,7 +20,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-reason-confirmation-2026-07-01"
+TWILIO_APP_VERSION = "atlas-business-email-api-2026-07-01"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -45,6 +47,8 @@ TWILIO_TTS_LANGUAGE = os.getenv("TWILIO_TTS_LANGUAGE", "en-GB")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 REVIEW_BASE_URL = os.getenv("REVIEW_BASE_URL", PUBLIC_BASE_URL).rstrip("/")
 SMS_FOLLOWUP_ENABLED = os.getenv("SMS_FOLLOWUP_ENABLED", "0") == "1"
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").lower()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
@@ -345,15 +349,14 @@ def build_twiml(prompt, bot, call_sid):
 
     if bot.current_step == "confirmation":
         gather = Gather(
-            input="dtmf speech",
+            input="speech",
             action="/gather",
             method="POST",
-            num_digits=1,
             timeout=8,
             speech_timeout="auto",
             action_on_empty_result=False,
         )
-        say(gather, prompt + " Press 1 for yes, or 2 if something sounds wrong.")
+        say(gather, prompt)
         response.append(gather)
         response.redirect(f"/repeat/{call_sid}", method="POST")
         return response
@@ -495,20 +498,59 @@ def build_notification_email_body(call_sid, lead, transcript, form_payload):
     return "\n".join(lines)
 
 
-def send_business_notification_email(call_sid, lead, transcript, form_payload):
-    to_email = get_notification_email_for_form_payload(form_payload)
-    if not to_email:
-        print("[EMAIL SKIPPED] BUSINESS_NOTIFICATION_EMAIL or business notification email is missing.")
+def send_business_notification_email_via_resend(to_email, subject, body):
+    if not RESEND_API_KEY:
+        print("[EMAIL SKIPPED] RESEND_API_KEY is missing.")
         return False
+    if not SMTP_FROM_EMAIL:
+        print("[EMAIL SKIPPED] SMTP_FROM_EMAIL is required as the sender address.")
+        return False
+
+    payload = json.dumps(
+        {
+            "from": SMTP_FROM_EMAIL,
+            "to": [to_email],
+            "subject": subject,
+            "text": body,
+        }
+    ).encode("utf-8")
+    request = url_request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with url_request.urlopen(request, timeout=15) as response:
+            response_body = response.read().decode("utf-8", errors="replace")
+        print("[EMAIL SENT]", {"provider": "resend", "to": to_email, "response": response_body})
+        return True
+    except HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        print("[EMAIL ERROR]", {"provider": "resend", "status": exc.code, "body": error_body})
+        return False
+    except URLError as exc:
+        print("[EMAIL ERROR]", {"provider": "resend", "error": repr(exc)})
+        return False
+    except Exception as exc:
+        print("[EMAIL ERROR]", {"provider": "resend", "error": repr(exc)})
+        return False
+
+
+def send_business_notification_email_via_smtp(to_email, subject, body):
     if not SMTP_HOST or not SMTP_FROM_EMAIL:
         print("[EMAIL SKIPPED] SMTP_HOST and SMTP_FROM_EMAIL/SMTP_USERNAME are required.")
         return False
 
     message = EmailMessage()
-    message["Subject"] = f"New Atlas call: {lead.get('name') or form_payload.get('From', 'unknown caller')}"
+    message["Subject"] = subject
     message["From"] = SMTP_FROM_EMAIL
     message["To"] = to_email
-    message.set_content(build_notification_email_body(call_sid, lead, transcript, form_payload))
+    message.set_content(body)
 
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
@@ -516,11 +558,27 @@ def send_business_notification_email(call_sid, lead, transcript, form_payload):
             if SMTP_USERNAME and SMTP_PASSWORD:
                 smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
             smtp.send_message(message)
-        print("[EMAIL SENT]", {"to": to_email, "call_sid": call_sid})
+        print("[EMAIL SENT]", {"provider": "smtp", "to": to_email})
         return True
     except Exception as exc:
-        print("[EMAIL ERROR]", repr(exc))
+        print("[EMAIL ERROR]", {"provider": "smtp", "error": repr(exc)})
         return False
+
+
+def send_business_notification_email(call_sid, lead, transcript, form_payload):
+    to_email = get_notification_email_for_form_payload(form_payload)
+    if not to_email:
+        print("[EMAIL SKIPPED] BUSINESS_NOTIFICATION_EMAIL or business notification email is missing.")
+        return False
+
+    subject = f"New Atlas call: {lead.get('name') or form_payload.get('From', 'unknown caller')}"
+    body = build_notification_email_body(call_sid, lead, transcript, form_payload)
+    print("[EMAIL ATTEMPT]", {"provider": EMAIL_PROVIDER, "to": to_email, "call_sid": call_sid})
+
+    if EMAIL_PROVIDER == "resend":
+        return send_business_notification_email_via_resend(to_email, subject, body)
+
+    return send_business_notification_email_via_smtp(to_email, subject, body)
 
 
 def save_completed_call_to_database(call_sid, lead, transcript, form_payload):
@@ -639,10 +697,15 @@ def complete_call_after_response(call_sid, lead, transcript, form_payload):
         print("[SMS ERROR]", repr(exc))
         lead["sms_sent"] = False
 
-    save_lead_snapshot(call_sid, lead, transcript, form_payload)
-    save_transcript_snapshot(call_sid, lead, transcript, form_payload)
-    save_completed_call_to_database(call_sid, lead, transcript, form_payload)
-    send_business_notification_email(call_sid, lead, transcript, form_payload)
+    try:
+        save_lead_snapshot(call_sid, lead, transcript, form_payload)
+        save_transcript_snapshot(call_sid, lead, transcript, form_payload)
+    except Exception as exc:
+        print("[LOCAL SNAPSHOT ERROR]", repr(exc))
+
+    db_saved = save_completed_call_to_database(call_sid, lead, transcript, form_payload)
+    email_sent = send_business_notification_email(call_sid, lead, transcript, form_payload)
+    print("[CALL COMPLETION RESULT]", {"call_sid": call_sid, "db_saved": db_saved, "email_sent": email_sent})
 
 
 @app.route("/health", methods=["GET"])
@@ -724,6 +787,7 @@ def repeat(call_sid):
 def gather():
     call_sid = get_call_sid()
     bot = get_or_create_bot(call_sid)
+    setup_call_context(call_sid, bot)
     inbound = normalize_inbound_for_step(bot)
 
     if not inbound:
