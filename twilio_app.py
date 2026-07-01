@@ -18,7 +18,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-no-sms-email-notify-2026-06-30"
+TWILIO_APP_VERSION = "atlas-reason-confirmation-2026-07-01"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
