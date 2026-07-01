@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-address-two-try-2026-06-19"
+    DIALOGUE_VERSION = "atlas-reason-confirmation-2026-07-01"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -233,6 +233,47 @@ class AIReceptionist:
         ]
         return self.looks_like_address(msg) or any(city in text for city in service_cities)
 
+    def is_vague_issue(self, msg):
+        text = self.normalize(msg)
+        vague_phrases = {
+            "i need help",
+            "need help",
+            "i need service",
+            "need service",
+            "i need someone",
+            "send someone",
+            "come out",
+            "someone to come out",
+            "service call",
+            "appointment",
+            "question",
+        }
+        if not text:
+            return True
+        if text in vague_phrases or any(phrase in text for phrase in vague_phrases):
+            return True
+        return len(text.split()) <= 3 and not self.contains_any(
+            text,
+            [
+                "ac",
+                "air",
+                "heat",
+                "heater",
+                "furnace",
+                "cooling",
+                "leak",
+                "broken",
+                "repair",
+                "quote",
+                "estimate",
+                "install",
+                "noise",
+                "warm",
+                "hot",
+                "cold",
+            ],
+        )
+
     def extract_unit(self, msg):
         match = re.search(
             r"\b(?:apt|apartment|unit|suite|ste|#)\s*([A-Za-z0-9\-]+)",
@@ -320,6 +361,9 @@ class AIReceptionist:
 
     def clean_customer_reason(self, msg):
         text = msg.strip()
+        lower = text.lower()
+        text = re.sub(r"\b(?:send|sent)\s+(?:this|it|that)?\s*(?:over|through)\b", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip(" .,-")
         lower = text.lower()
         issue_starts = [
             "my ac",
@@ -467,9 +511,13 @@ class AIReceptionist:
             return self.handle_confirmation(msg)
 
         if self.current_step == "clarify_intent":
+            if self.looks_like_address(msg):
+                return "I caught the location. Before that, what problem should the team help with?"
             self.lead["issue"] = msg
             self.lead["issue_summary"] = msg
             self.classify_issue(msg)
+            if self.lead["category"] == "General Inquiry" and self.is_vague_issue(msg):
+                return "I want the service note to be clear. What problem should the team help with?"
             return self.next_question()
 
         if self.current_step in {"name", "phone", "email", "address", "preferred_time", "system_status"}:
@@ -544,10 +592,14 @@ class AIReceptionist:
     def next_question(self):
         category = self.lead["category"]
 
-        if self.lead["phone_confirmed"] and category in {"", "General Inquiry"}:
+        if (
+            self.lead["phone_confirmed"]
+            and category in {"", "General Inquiry"}
+            and self.is_vague_issue(self.lead["issue_summary"] or self.lead["issue"])
+        ):
             self.current_step = "clarify_intent"
             return (
-                "Before I send this over, what would you like the team to help with?"
+                "I want the service note to be clear. What problem should the team help with?"
             )
 
         if not self.lead["name"]:
@@ -578,6 +630,11 @@ class AIReceptionist:
         if not self.lead["preferred_time"] and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling"}:
             self.current_step = "preferred_time"
             return self.prompt_for_preferred_time()
+
+        if not self.awaiting_confirmation:
+            self.current_step = "confirmation"
+            self.awaiting_confirmation = True
+            return self.build_confirmation()
 
         return self.submit_request()
 
@@ -718,16 +775,19 @@ class AIReceptionist:
         negative = {"no", "not correct", "incorrect", "change that", "update that", "wait"}
 
         if any(phrase == text or phrase in text for phrase in affirmative):
+            self.awaiting_confirmation = False
             return self.submit_request()
 
         if any(phrase == text or phrase in text for phrase in negative):
+            self.awaiting_confirmation = False
             self.lead["possible_transcription_error"] = True
             self.lead["sms_review_required"] = True
             self.lead["verification_status"] = "Needs Team Review"
             return self.submit_request()
 
         self.apply_update(msg)
-        return "I added that. " + self.build_confirmation()
+        self.awaiting_confirmation = False
+        return "I added that. " + self.next_question()
 
     def handle_phone_confirmation(self, msg):
         text = self.normalize(msg)
