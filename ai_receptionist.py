@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-reason-confirmation-2026-07-01"
+    DIALOGUE_VERSION = "atlas-correction-patterns-2026-07-01"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -110,6 +110,8 @@ class AIReceptionist:
             "uh",
             "phone",
             "email",
+            "it",
+            "is",
             "quote",
             "service",
             "appointment",
@@ -156,6 +158,8 @@ class AIReceptionist:
             "my name is",
             "name is",
             "this is",
+            "it is",
+            "it's",
             "i am",
             "im",
             "i m",
@@ -219,7 +223,7 @@ class AIReceptionist:
             "trail",
         ]
         return bool(re.search(r"\d{2,6}\s+\w+", text)) and any(
-            word in text.split() for word in street_words
+            word.strip(".,") in street_words for word in text.split()
         )
 
     def looks_like_service_location(self, msg):
@@ -510,6 +514,11 @@ class AIReceptionist:
         if self.current_step == "confirmation":
             return self.handle_confirmation(msg)
 
+        if self.current_step == "confirmation_correction":
+            self.apply_confirmation_correction(msg)
+            self.awaiting_confirmation = False
+            return "Thank you, I updated that. " + self.next_question()
+
         if self.current_step == "clarify_intent":
             if self.looks_like_address(msg):
                 return "I caught the location. Before that, what problem should the team help with?"
@@ -772,7 +781,20 @@ class AIReceptionist:
         text = self.normalize(msg)
 
         affirmative = {"yes", "correct", "looks good", "that is right", "that's right", "submit", "send it", "all good"}
-        negative = {"no", "not correct", "incorrect", "change that", "update that", "wait"}
+        negative = {
+            "no",
+            "not correct",
+            "incorrect",
+            "wrong",
+            "that is wrong",
+            "that's wrong",
+            "not right",
+            "that is not right",
+            "that's not right",
+            "change that",
+            "update that",
+            "wait",
+        }
 
         if any(phrase == text or phrase in text for phrase in affirmative):
             self.awaiting_confirmation = False
@@ -783,7 +805,11 @@ class AIReceptionist:
             self.lead["possible_transcription_error"] = True
             self.lead["sms_review_required"] = True
             self.lead["verification_status"] = "Needs Team Review"
-            return self.submit_request()
+            self.current_step = "confirmation_correction"
+            return (
+                "No problem. Please restate the part that sounded wrong, "
+                "or say the corrected service note."
+            )
 
         self.apply_update(msg)
         self.awaiting_confirmation = False
@@ -829,6 +855,98 @@ class AIReceptionist:
 
         self.apply_update(msg)
         return "I added that to the request. " + self.submit_request()
+
+    def apply_confirmation_correction(self, msg):
+        normalized = self.normalize(msg)
+        name = self.extract_name(msg)
+        phone = self.extract_phone(msg)
+        email = self.extract_email(msg)
+
+        if name:
+            self.lead["name"] = name
+        if phone:
+            self.lead["phone"] = phone
+        if email:
+            self.lead["email"] = email
+
+        if self.looks_like_address(msg):
+            self.lead["address"] = self.clean_corrected_address(msg)
+            unit = self.extract_unit(msg)
+            if unit:
+                self.lead["unit"] = unit
+        elif self.looks_like_time_correction(normalized):
+            self.lead["preferred_time"] = self.clean_corrected_time(msg)
+        elif not phone and not email and not name:
+            corrected_reason = self.clean_corrected_reason(msg)
+            if corrected_reason:
+                self.lead["issue"] = corrected_reason
+                self.lead["issue_summary"] = corrected_reason
+                self.classify_issue(corrected_reason)
+
+        self.lead["possible_transcription_error"] = False
+        self.lead["sms_review_required"] = False
+        self.lead["verification_status"] = "Corrected By Caller"
+
+    def clean_corrected_address(self, msg):
+        cleaned = re.sub(
+            r"^(?:the\s+)?(?:correct\s+)?address\s+(?:is|should be)\s+",
+            "",
+            msg.strip(),
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r"\s+", " ", cleaned).strip(" .,-")
+
+    def looks_like_time_correction(self, normalized):
+        return any(
+            phrase in normalized
+            for phrase in [
+                "best time",
+                "good time",
+                "better time",
+                "call me",
+                "reach me",
+                "tomorrow",
+                "today",
+                "morning",
+                "afternoon",
+                "evening",
+                "after",
+                "before",
+                "anytime",
+            ]
+        )
+
+    def clean_corrected_time(self, msg):
+        cleaned = re.sub(
+            r"^(?:the\s+)?(?:best|good|better)\s+time\s+(?:is|would be|should be)\s+",
+            "",
+            msg.strip(),
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r"\s+", " ", cleaned).strip(" .,-")
+
+    def clean_corrected_reason(self, msg):
+        cleaned = re.sub(
+            r"\b(?:send|sent)\s+(?:this|it|that)?\s*(?:over|through)\b",
+            "",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        changed = True
+        cleaned = cleaned.strip()
+        while changed:
+            changed = False
+            next_cleaned = re.sub(
+                r"^(?:um|uh|yeah|yes|actually|sorry|no|wait|i said)\s+",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            ).strip()
+            if next_cleaned != cleaned:
+                cleaned = next_cleaned
+                changed = True
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,-")
+        return cleaned
 
     def apply_update(self, msg):
         self.update_context(msg)
