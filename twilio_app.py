@@ -20,7 +20,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-auto-submit-email-2026-07-01"
+TWILIO_APP_VERSION = "atlas-natural-followup-2026-07-16"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -314,6 +314,8 @@ def normalize_inbound_for_step(bot):
             return digits
         if bot.current_step == "phone_confirmation":
             return {"1": "yes", "2": "no"}.get(digits, digits)
+        if bot.awaiting_anything_else:
+            return {"1": "no"}.get(digits, digits)
         if bot.current_step in {"confirmation", "preferred_time"}:
             return {"1": "yes", "2": "no"}.get(digits, digits)
 
