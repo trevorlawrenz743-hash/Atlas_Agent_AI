@@ -1,33 +1,28 @@
+import os
 import re
+import json
 from datetime import datetime
+from dotenv import load_dotenv
+from openai import OpenAI
 
-from industry_profiles import get_industry_profile
+load_dotenv("/Users/trevorlawrenz/Documents/.env")
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-natural-followup-2026-07-16"
 
-    def __init__(self, use_llm_classifier=False):
-        self.use_llm_classifier = use_llm_classifier
+    def __init__(self):
         self.reset()
 
     def reset(self):
         self.current_step = "greeting"
-        self.awaiting_confirmation = False
-        self.awaiting_anything_else = False
-        self.awaiting_phone_confirmation = False
-        self.address_prompt_count = 0
-        self.address_candidate = ""
 
         self.company_info = {
             "name": "ABC Heating & Air",
             "hours": "Monday through Friday from 8 AM to 6 PM",
-            "service_areas": (
-                "Austin, Round Rock, Cedar Park, Pflugerville, Georgetown, "
-                "downtown Austin, and nearby areas"
-            ),
-            "industry": "hvac",
-            "assistant_name": "Atlas",
+            "service_areas": "Austin, Round Rock, Cedar Park, Pflugerville, Georgetown, downtown Austin, and nearby areas",
+            "emergency_service": True
         }
 
         self.lead = {
@@ -35,1022 +30,546 @@ class AIReceptionist:
             "phone": "",
             "email": "",
             "address": "",
-            "unit": "",
-            "customer_type": "",
             "issue": "",
-            "issue_summary": "",
             "category": "",
-            "priority": "Normal",
+            "priority": "",
             "reason": "",
-            "danger_flag": False,
-            "safety_note_given": False,
-            "preferred_time": "",
-            "system_status": "",
-            "appointment_action": "",
-            "human_requested": False,
-            "existing_appointment": False,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "verified": False,
             "sms_sent": False,
-            "phone_confirmed": False,
-            "verification_status": "Unverified",
-            "possible_transcription_error": False,
-            "sms_review_required": False,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "human_requested": False,
+            "existing_appointment": False,
+            "different_address_requested": False,
+            "extra_update_count": 0,
+            "soft_close_started": False
         }
 
-    # -------------------------
-    # Normalization
-    # -------------------------
+    # =========================
+    # NORMALIZATION
+    # =========================
     def normalize(self, text):
         text = text.lower()
-        text = re.sub(r"[^a-z0-9@\.\s#,\-]", " ", text)
-        return re.sub(r"\s+", " ", text).strip()
-
-    def contains_any(self, text, phrases):
-        normalized = self.normalize(text)
-        return any(phrase in normalized for phrase in phrases)
+        text = re.sub(r"[^a-z0-9@\.\s\-]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
     def is_greeting_only(self, msg):
-        return self.normalize(msg) in {
-            "hello",
-            "hi",
-            "hey",
-            "good morning",
-            "good afternoon",
-            "good evening",
-        }
+        return self.normalize(msg) in [
+            "hello", "hi", "hey",
+            "good morning", "good afternoon", "good evening"
+        ]
 
-    # -------------------------
-    # Field extraction
-    # -------------------------
+    # =========================
+    # FIELD EXTRACTION
+    # =========================
     def extract_email(self, msg):
         match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", msg)
         return match.group(0).strip() if match else None
 
     def extract_phone(self, msg):
         digits = re.sub(r"\D", "", msg)
+
         if len(digits) == 11 and digits.startswith("1"):
             digits = digits[1:]
-        return digits if len(digits) == 10 else None
 
-    def format_phone_for_voice(self, phone):
-        if len(phone) != 10:
-            return phone
-        return f"{phone[:3]}-{phone[3:6]}-{phone[6:]}"
-
-    def is_valid_name(self, name):
-        bad_words = {
-            "yes",
-            "yeah",
-            "yep",
-            "sure",
-            "okay",
-            "ok",
-            "um",
-            "uh",
-            "phone",
-            "email",
-            "it",
-            "is",
-            "quote",
-            "service",
-            "appointment",
-            "repair",
-            "billing",
-            "financing",
-            "interested",
-            "new",
-            "returning",
-            "customer",
-            "available",
-            "tomorrow",
-            "today",
-            "too",
-            "austin",
-            "street",
-            "road",
-            "drive",
-            "avenue",
-            "lane",
-            "blvd",
-            "ac",
-            "heat",
-        }
-        parts = self.normalize(name).split()
-        return 2 <= len(parts) <= 4 and not any(word in bad_words for word in parts)
-
-    def clean_name_candidate(self, name):
-        candidate = re.sub(r"[^a-zA-Z\s]", " ", name).strip()
-        candidate = re.sub(r"\s+", " ", candidate)
-        filler_prefixes = [
-            "yes",
-            "yeah",
-            "yep",
-            "sure",
-            "okay",
-            "ok",
-            "absolutely",
-            "um",
-            "uh",
-            "so",
-            "hello",
-            "hi",
-            "my name is",
-            "name is",
-            "this is",
-            "it is",
-            "it's",
-            "i am",
-            "im",
-            "i m",
-        ]
-        changed = True
-        while changed:
-            changed = False
-            lower = candidate.lower()
-            for prefix in filler_prefixes:
-                if lower == prefix:
-                    return ""
-                if lower.startswith(prefix + " "):
-                    candidate = candidate[len(prefix) :].strip()
-                    changed = True
-                    break
-        return candidate
-
-    def extract_name(self, msg):
-        patterns = [
-            r"my name is ([a-zA-Z\s]+?)(?:,| and |$)",
-            r"this is ([a-zA-Z\s]+?)(?:,| and |$)",
-            r"i am ([a-zA-Z\s]+?)(?:,| and |$)",
-            r"i'm ([a-zA-Z\s]+?)(?:,| and |$)",
-            r"name is ([a-zA-Z\s]+?)(?:,| and |$)",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, msg, re.IGNORECASE)
-            if match:
-                candidate = self.clean_name_candidate(match.group(1))
-                if self.is_valid_name(candidate):
-                    return candidate.title()
-
-        if self.current_step == "name":
-            candidate = self.clean_name_candidate(msg)
-            if self.is_valid_name(candidate):
-                return candidate.title()
+        if len(digits) == 10:
+            return digits
 
         return None
 
-    def looks_like_address(self, msg):
-        if self.extract_email(msg) or self.extract_phone(msg):
+    def is_valid_name(self, name):
+        if not name:
             return False
 
-        text = self.normalize(msg)
-        street_words = [
-            "st",
-            "street",
-            "rd",
-            "road",
-            "dr",
-            "drive",
-            "ave",
-            "avenue",
-            "ln",
-            "lane",
-            "blvd",
-            "court",
-            "ct",
-            "way",
-            "trail",
+        bad_words = [
+            "phone", "email", "quote", "service", "appointment", "reschedule",
+            "downtown", "austin", "financing", "carrier", "repair", "ac",
+            "heat", "working", "stopped", "broken", "leaking", "hours",
+            "open", "close", "cost", "price", "tomorrow", "today"
         ]
-        return bool(re.search(r"\d{2,6}\s+\w+", text)) and any(
-            word.strip(".,") in street_words for word in text.split()
-        )
 
-    def looks_like_service_location(self, msg):
-        text = self.normalize(msg)
-        service_cities = [
-            "austin",
-            "round rock",
-            "cedar park",
-            "pflugerville",
-            "georgetown",
+        normalized = self.normalize(name)
+        parts = name.split()
+
+        if any(word in normalized.split() for word in bad_words):
+            return False
+
+        if len(parts) < 2:
+            return False
+
+        if len(parts) > 4:
+            return False
+
+        return True
+
+    def extract_name(self, msg):
+        text = msg.strip()
+
+        patterns = [
+            r"my name is ([a-zA-Z\s]+?)(?:,| and | also | do you | can you | what | when | where | how |$)",
+            r"this is ([a-zA-Z\s]+?)(?:,| and | also | do you | can you | what | when | where | how |$)",
+            r"i am ([a-zA-Z\s]+?)(?:,| and | also | do you | can you | what | when | where | how |$)",
+            r"i'm ([a-zA-Z\s]+?)(?:,| and | also | do you | can you | what | when | where | how |$)",
+            r"name is ([a-zA-Z\s]+?)(?:,| and | also | do you | can you | what | when | where | how |$)"
         ]
-        return self.looks_like_address(msg) or any(city in text for city in service_cities)
 
-    def is_vague_issue(self, msg):
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                name = re.sub(r"\s+", " ", match.group(1).strip())
+                if self.is_valid_name(name):
+                    return name.title()
+
+        if self.current_step == "name":
+            cleaned = re.sub(r"[^a-zA-Z\s]", "", text).strip()
+            cleaned = re.sub(r"\s+", " ", cleaned)
+
+            if self.is_valid_name(cleaned):
+                return cleaned.title()
+
+        return None
+
+    def customer_mentions_different_address(self, msg):
         text = self.normalize(msg)
-        vague_phrases = {
-            "i need help",
-            "need help",
-            "i need service",
-            "need service",
-            "i need someone",
-            "send someone",
-            "come out",
-            "someone to come out",
-            "service call",
-            "appointment",
-            "question",
-        }
-        if not text:
-            return True
-        if text in vague_phrases or any(phrase in text for phrase in vague_phrases):
-            return True
-        return len(text.split()) <= 3 and not self.contains_any(
-            text,
-            [
-                "ac",
-                "air",
-                "heat",
-                "heater",
-                "furnace",
-                "cooling",
-                "leak",
-                "broken",
-                "repair",
-                "quote",
-                "estimate",
-                "install",
-                "noise",
-                "warm",
-                "hot",
-                "cold",
-            ],
-        )
 
-    def extract_unit(self, msg):
-        match = re.search(
-            r"\b(?:apt|apartment|unit|suite|ste|#)\s*([A-Za-z0-9\-]+)",
-            msg,
-            re.IGNORECASE,
-        )
-        if not match:
+        triggers = [
+            "different address",
+            "new address",
+            "another address",
+            "different location",
+            "new location",
+            "another location",
+            "service address is",
+            "system is located at",
+            "come to"
+        ]
+
+        return any(x in text for x in triggers)
+
+    def extract_address(self, msg):
+        if not self.customer_mentions_different_address(msg):
             return None
 
-        unit_value = match.group(1).strip()
-        blocked_values = {"is", "was", "has", "leaking", "making", "not"}
-        if unit_value.lower() in blocked_values:
-            return None
-        if not any(char.isdigit() for char in unit_value) and len(unit_value) > 3:
-            return None
-        return match.group(0).strip()
+        text = msg.strip()
 
-    def extract_fields(self, msg):
+        if len(text) < 6:
+            return None
+
+        if self.extract_email(text) or self.extract_phone(text):
+            return None
+
+        return text
+
+    def extract_all_fields(self, msg):
         name = self.extract_name(msg)
         phone = self.extract_phone(msg)
         email = self.extract_email(msg)
-        unit = self.extract_unit(msg)
+        address = self.extract_address(msg)
 
         if name and not self.lead["name"]:
             self.lead["name"] = name
+
         if phone and not self.lead["phone"]:
             self.lead["phone"] = phone
+
         if email and not self.lead["email"]:
             self.lead["email"] = email
-        if unit:
-            self.lead["unit"] = unit
-        if self.current_step == "address" and self.looks_like_address(msg):
-            self.lead["address"] = msg.strip()
 
-    # -------------------------
-    # Classification
-    # -------------------------
-    def classify_issue(self, msg):
-        text = self.normalize(msg)
-        profile = get_industry_profile(self.company_info.get("industry"))
+        if address:
+            self.lead["address"] = address
+            self.lead["different_address_requested"] = True
 
-        if self.is_dangerous_issue(text):
-            self.lead["danger_flag"] = True
-            return self.apply_classification("Support", "High", "Potential safety concern.")
-
-        if self.contains_any(text, ["human", "real person", "representative", "manager", "live agent"]):
-            return self.apply_classification("Human Request", "Normal", "Customer asked for a person.")
-
-        if self.contains_any(text, ["reschedule", "move my appointment", "cancel appointment", "cancel my appointment"]):
-            return self.apply_classification("Scheduling", "Normal", "Appointment scheduling request.")
-
-        if self.contains_any(text, ["invoice", "charged", "charge", "payment", "refund", "receipt", "bill"]):
-            return self.apply_classification("Billing", "Normal", "Billing/payment language.")
-
-        if self.contains_any(text, ["complaint", "upset", "bad service", "never showed", "missed appointment"]):
-            priority = "High" if self.contains_any(text, profile["high_priority_keywords"]) else "Normal"
-            return self.apply_classification("Complaint", priority, "Complaint or missed appointment language.")
-
-        if self.contains_any(text, profile["sales_keywords"]):
-            return self.apply_classification("Sales", "Normal", "Quote, replacement, or installation language.")
-
-        if self.contains_any(text, profile["support_keywords"]):
-            priority = "High" if self.is_likely_emergency(text) else "Normal"
-            return self.apply_classification("Support", priority, "Repair or active system problem.")
-
-        if self.contains_any(text, ["hours", "open", "close", "service area", "do you service"]):
-            return self.apply_classification("General Inquiry", "Normal", "General company question.")
-
-        return self.apply_classification("General Inquiry", "Normal", "Could not confidently classify.")
-
-    def is_likely_emergency(self, text):
-        profile = get_industry_profile(self.company_info.get("industry"))
-        return any(phrase in text for phrase in profile["high_priority_keywords"])
-
-    def is_dangerous_issue(self, text):
-        profile = get_industry_profile(self.company_info.get("industry"))
-        return any(phrase in text for phrase in profile["danger_keywords"])
-
-    def apply_classification(self, category, priority, reason):
-        self.lead["category"] = category
-        self.lead["priority"] = priority
-        self.lead["reason"] = reason
-        if category == "Human Request":
-            self.lead["human_requested"] = True
-
-    def clean_customer_reason(self, msg):
-        text = msg.strip()
-        lower = text.lower()
-        text = re.sub(r"\b(?:send|sent)\s+(?:this|it|that)?\s*(?:over|through)\b", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s+", " ", text).strip(" .,-")
-        lower = text.lower()
-        issue_starts = [
-            "my ac",
-            "my air",
-            "my heat",
-            "my heater",
-            "my furnace",
-            "the ac",
-            "the air",
-            "the heat",
-            "the heater",
-            "the furnace",
-            "there is",
-            "i need repair",
-        ]
-        positions = [lower.find(phrase) for phrase in issue_starts if lower.find(phrase) >= 0]
-        if positions:
-            return text[min(positions):].strip()
-        return text
-
-    # -------------------------
-    # Context and FAQ handling
-    # -------------------------
-    def update_context(self, msg):
-        text = self.normalize(msg)
-
-        if self.contains_any(text, ["new customer", "first time", "never used you", "never called before"]):
-            self.lead["customer_type"] = "New"
-
-        if self.contains_any(text, ["returning customer", "used you before", "existing customer", "you installed", "you serviced"]):
-            self.lead["customer_type"] = "Returning"
-
-        if self.is_dangerous_issue(text):
-            self.lead["danger_flag"] = True
-
-        if self.contains_any(text, ["already have an appointment", "appointment today", "appointment tomorrow"]):
-            self.lead["existing_appointment"] = True
-
-        if self.contains_any(text, ["reschedule", "move my appointment"]):
-            self.lead["existing_appointment"] = True
-            self.lead["appointment_action"] = "Reschedule"
-
-        if self.contains_any(text, ["cancel appointment", "cancel my appointment"]):
-            self.lead["existing_appointment"] = True
-            self.lead["appointment_action"] = "Cancel"
-
+    # =========================
+    # QUESTION HANDLING
+    # =========================
     def answer_special_question(self, msg):
         text = self.normalize(msg)
-        answers = []
+        responses = []
 
-        if self.contains_any(text, ["hours", "open", "close", "what time"]):
-            answers.append(f"Our regular office hours are {self.company_info['hours']}.")
+        if any(x in text for x in [
+            "hours", "open", "close", "what time", "when are you"
+        ]):
+            responses.append(
+                f"Our regular office hours are {self.company_info['hours']}."
+            )
 
-        if self.contains_any(text, ["service area", "do you service", "do you work in", "round rock", "cedar park", "pflugerville", "georgetown"]):
-            city_answer = self.answer_service_area_question(text)
-            answers.append(city_answer)
+        if any(x in text for x in [
+            "service area", "do you service", "do you work in",
+            "downtown austin", "austin", "round rock", "cedar park",
+            "georgetown", "pflugerville"
+        ]):
+            responses.append(
+                f"We service {self.company_info['service_areas']}."
+            )
 
-        if self.contains_any(text, ["financing", "finance", "payment plan", "monthly payments"]):
-            answers.append("Our team can review available financing options with you.")
+        if any(x in text for x in [
+            "financing", "finance", "payment plan", "monthly payments"
+        ]):
+            responses.append(
+                "Many customers ask about financing. Our team can review available options with you."
+            )
 
-        if self.contains_any(text, ["how soon", "come out today", "available today", "earliest appointment", "when can you come"]):
-            answers.append("Availability depends on the schedule and urgency, but I can note that you would like the soonest available follow-up.")
+        if any(x in text for x in [
+            "how soon", "come out today", "available today", "earliest appointment"
+        ]):
+            responses.append(
+                "Availability depends on the schedule and urgency, but I can note that you'd like the soonest available follow-up."
+            )
 
-        return " ".join(answers)
+        if any(x in text for x in [
+            "carrier", "trane", "lennox", "goodman", "rheem", "mini split"
+        ]):
+            responses.append(
+                "We service many common HVAC systems and brands. Our team can confirm the details for your specific unit."
+            )
 
-    def answer_service_area_question(self, text):
-        city_names = {
-            "round rock": "Round Rock",
-            "cedar park": "Cedar Park",
-            "pflugerville": "Pflugerville",
-            "georgetown": "Georgetown",
-            "downtown austin": "downtown Austin",
-            "austin": "Austin",
-        }
-        for key, label in city_names.items():
-            if key in text:
-                return f"Yes, we do service {label}."
-        return f"We service {self.company_info['service_areas']}."
+        if any(x in text for x in [
+            "speak to a person", "speak with a person", "real person",
+            "representative", "human", "manager", "live agent",
+            "talk to someone", "talk to a person"
+        ]):
+            self.lead["category"] = "Human Request"
+            self.lead["priority"] = "Normal"
+            self.lead["human_requested"] = True
 
-    def is_question_only(self, msg):
+            responses.append(
+                "Absolutely. I can document your request and have someone from our team follow up."
+            )
+
+        return " ".join(responses) if responses else None
+
+    # =========================
+    # CONTEXT FLAGS
+    # =========================
+    def update_context_flags(self, msg):
         text = self.normalize(msg)
-        question_mark = "?" in msg
-        question_phrases = [
-            "do you service",
-            "do you work in",
-            "what are your hours",
-            "are you open",
-            "how soon",
-            "when can you come",
-            "available today",
-            "earliest appointment",
-        ]
-        action_phrases = [
-            "no ac",
-            "no air",
-            "no heat",
-            "not cooling",
-            "not heating",
-            "completely out",
-            "stopped working",
-            "leaking",
-            "repair",
-            "quote",
-            "estimate",
-            "install",
-            "replace",
-            "billing",
-            "invoice",
+
+        if any(x in text for x in [
+            "already have an appointment",
+            "appointment tomorrow",
+            "appointment today",
             "reschedule",
-            "cancel",
-            "talk to",
-            "person",
+            "cancel appointment"
+        ]):
+            self.lead["existing_appointment"] = True
+
+    # =========================
+    # EMERGENCY OVERRIDE
+    # =========================
+    def emergency_override(self, msg):
+        text = self.normalize(msg)
+
+        keywords = [
+            "no air", "no ac", "no heat",
+            "not working", "broken", "stopped working",
+            "leak", "flood", "water",
+            "over 100", "100 degrees", "very hot",
+            "freezing", "urgent", "emergency", "asap"
         ]
-        return (question_mark or any(x in text for x in question_phrases)) and not any(
-            x in text for x in action_phrases
+
+        for keyword in keywords:
+            if keyword in text:
+                return {
+                    "category": "Support",
+                    "priority": "High",
+                    "reason": f"Matched emergency keyword: {keyword}"
+                }
+
+        return None
+
+    # =========================
+    # LLM CLASSIFICATION
+    # =========================
+    def classify_with_llm(self, msg):
+        system_prompt = """
+You are an HVAC dispatch classifier.
+
+Return ONLY JSON:
+{
+  "category": "...",
+  "priority": "...",
+  "summary": "...",
+  "reason": "..."
+}
+
+Categories:
+Support, Sales, Billing, Complaint, General Inquiry
+
+Support = repair, AC/heat not working, leak, airflow, cooling, heating problem, existing appointment with active system problem
+Sales = quote, pricing, estimate, new install, replacement, upgrade
+Billing = invoice, payment, refund, charge, receipt
+Complaint = bad service, technician issue, missed appointment, upset customer
+General Inquiry = service area, hours, general questions
+
+Priority:
+High = no AC/heat, extreme temperature, leak, flood, emergency, urgent, missed technician for active service issue
+Normal = everything else
+
+If a message contains multiple intents, choose the most business-actionable intent.
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": msg}
+            ],
+            response_format={"type": "json_object"}
         )
 
-    # -------------------------
-    # Flow control
-    # -------------------------
-    def process_conversation(self, msg):
-        msg = msg.strip()
-        if not msg:
-            return "I can help with that. What would you like our team to know?"
+        return json.loads(response.choices[0].message.content)
 
-        self.extract_fields(msg)
-        self.update_context(msg)
+    def classify_issue(self, msg):
+        override = self.emergency_override(msg)
 
-        if self.current_step == "complete":
-            return "Your request has already been submitted. A member of our team will follow up soon."
+        if override:
+            self.lead.update(override)
+            return
 
-        if self.current_step == "greeting" and self.is_greeting_only(msg):
-            return (
-                f"Thank you for calling {self.company_info['name']}. "
-                "I am Atlas, your virtual assistant. How can I help you today?"
-            )
+        try:
+            result = self.classify_with_llm(msg)
 
-        if self.awaiting_anything_else:
-            return self.handle_anything_else(msg)
+            self.lead["category"] = result.get("category", "General Inquiry")
+            self.lead["priority"] = result.get("priority", "Normal")
+            self.lead["reason"] = result.get("reason", "")
 
-        if self.current_step == "phone_confirmation":
-            return self.handle_phone_confirmation(msg)
+        except Exception as e:
+            print("[ERROR] LLM classification failed:", e)
 
-        if self.current_step == "confirmation":
-            return self.handle_confirmation(msg)
+            self.lead["category"] = "General Inquiry"
+            self.lead["priority"] = "Normal"
+            self.lead["reason"] = "LLM classification failed"
 
-        if self.current_step == "confirmation_correction":
-            self.apply_confirmation_correction(msg)
-            self.awaiting_confirmation = False
-            return "Thank you, I updated that. " + self.next_question()
-
-        if self.current_step == "clarify_intent":
-            if self.looks_like_address(msg):
-                return "I caught the location. Before that, what problem should the team help with?"
-            self.lead["issue"] = msg
-            self.lead["issue_summary"] = msg
-            self.classify_issue(msg)
-            if self.lead["category"] == "General Inquiry" and self.is_vague_issue(msg):
-                return "I want the service note to be clear. What problem should the team help with?"
-            return self.next_question()
-
-        if self.current_step in {"name", "phone", "email", "address", "preferred_time", "system_status"}:
-            return self.advance_after_field(msg)
-
-        faq_answer = self.answer_special_question(msg)
-
-        if faq_answer and not self.lead["issue"] and self.is_question_only(msg):
-            self.current_step = "clarify_intent"
-            return faq_answer + " What is going on with your system today?"
-
-        if not self.lead["issue"] and not self.is_greeting_only(msg):
-            clean_reason = self.clean_customer_reason(msg)
-            self.lead["issue"] = clean_reason
-            self.lead["issue_summary"] = clean_reason
-            self.classify_issue(msg)
-
-        if faq_answer and self.lead["category"] == "General Inquiry":
-            self.lead["issue"] = ""
-            self.lead["issue_summary"] = ""
-            self.current_step = "clarify_intent"
-            return faq_answer + " What is going on with your system today?"
-
-        question = self.next_question()
-        if faq_answer:
-            return f"{faq_answer} {question}"
-        return question
-
-    def advance_after_field(self, msg):
-        text = self.normalize(msg)
-        faq_answer = self.answer_special_question(msg)
-        if faq_answer and self.is_question_only(msg):
-            return faq_answer + " " + self.prompt_for_current_step()
-
-        if self.current_step == "email" and text in {"skip", "no", "none", "no email"}:
-            self.lead["email"] = "Skipped"
-
-        if self.current_step == "phone" and self.lead["phone"] and not self.lead["phone_confirmed"]:
-            self.current_step = "phone_confirmation"
-            self.awaiting_phone_confirmation = True
-            return self.prompt_for_phone_confirmation()
-
-        if self.current_step == "address" and not self.lead["address"]:
-            if self.looks_like_address(msg):
-                self.lead["address"] = msg.strip()
-            elif self.lead["category"] == "Sales" and self.looks_like_service_location(msg):
-                self.lead["address"] = msg.strip()
-            elif self.address_prompt_count >= 2:
-                self.lead["address"] = self.address_candidate or msg.strip() or "Needs team review"
-                self.lead["possible_transcription_error"] = True
-                self.lead["sms_review_required"] = True
-                return (
-                    "No problem, I will flag the service location for the team to confirm "
-                    "when they follow up. "
-                    + self.next_question()
-                )
-            else:
-                if msg.strip() and not self.address_candidate:
-                    self.address_candidate = msg.strip()
-                self.address_prompt_count += 1
-                if self.lead["category"] == "Sales":
-                    return "I may have missed the location. What city or service address is this for?"
-                return "I may have missed the address. What is the service address? A street address is best."
-
-        if self.current_step == "preferred_time":
-            self.lead["preferred_time"] = msg.strip()
-
-        if self.current_step == "system_status":
-            self.lead["system_status"] = msg.strip()
-            if self.is_likely_emergency(text):
-                self.lead["priority"] = "High"
-
-        return self.next_question()
-
-    def prompt_for_current_step(self):
-        if self.current_step == "name":
-            return self.prompt_for_name()
-        if self.current_step == "phone":
-            return self.prompt_for_phone()
-        if self.current_step == "phone_confirmation":
-            return self.prompt_for_phone_confirmation()
-        if self.current_step == "address":
-            return self.prompt_for_address()
-        if self.current_step == "system_status":
-            return self.prompt_for_system_status()
-        if self.current_step == "email":
-            return self.prompt_for_email()
-        if self.current_step == "preferred_time":
-            return self.prompt_for_preferred_time()
-        return self.next_question()
-
-    def next_question(self):
-        category = self.lead["category"]
-
-        if (
-            self.lead["phone_confirmed"]
-            and category in {"", "General Inquiry"}
-            and self.is_vague_issue(self.lead["issue_summary"] or self.lead["issue"])
-        ):
-            self.current_step = "clarify_intent"
-            return (
-                "I want the service note to be clear. What problem should the team help with?"
-            )
-
+    # =========================
+    # NEXT STEP LOGIC
+    # =========================
+    def next_missing_question(self):
         if not self.lead["name"]:
             self.current_step = "name"
-            return self.prompt_for_name()
+            return "May I have your name?"
 
         if not self.lead["phone"]:
             self.current_step = "phone"
-            return self.prompt_for_phone()
+            first_name = self.lead["name"].split()[0]
+            return f"Thanks {first_name}. What's the best phone number to reach you?"
 
-        if not self.lead["phone_confirmed"]:
-            self.current_step = "phone_confirmation"
-            self.awaiting_phone_confirmation = True
-            return self.prompt_for_phone_confirmation()
-
-        if category in {"Support", "Sales"} and not self.lead["address"]:
-            self.current_step = "address"
-            return self.prompt_for_address()
-
-        if category == "Support" and not self.lead["system_status"]:
-            self.current_step = "system_status"
-            return self.prompt_for_system_status()
-
-        if category in {"Sales", "Billing"} and not self.lead["email"]:
+        if self.lead["category"] in ["Sales", "Billing"] and not self.lead["email"]:
             self.current_step = "email"
-            return self.prompt_for_email()
+            return "What email address should we use for follow-up? You can also say skip."
 
-        if not self.lead["preferred_time"] and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling"}:
-            self.current_step = "preferred_time"
-            return self.prompt_for_preferred_time()
-
-        if not self.awaiting_anything_else and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling"}:
-            return self.ask_anything_else()
-
-        return self.submit_request()
-
-    def prompt_for_name(self):
-        category = self.lead["category"]
-        if category == "Support" and self.lead["priority"] == "High":
-            safety_note = ""
-            if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
-                self.lead["safety_note_given"] = True
-                safety_note = get_industry_profile(self.company_info.get("industry"))["safety_note"]
-            return (
-                "Oh no, that sounds miserable. I am glad you called. "
-                "Let me get the essentials so the right person can help."
-                + safety_note
-                + " Can I get your first and last name?"
-            )
-        if category == "Support":
-            return (
-                "Got it. I will keep this simple and make sure the note is clear. "
-                "Can I get your first and last name?"
-            )
-        if category == "Sales":
-            return (
-                "Sure, I can help get that started. "
-                "Can I get your first and last name?"
-            )
-        if category == "Billing":
-            return (
-                "Of course. I will get the billing question tied to the right contact so the team can follow up cleanly. "
-                "Can I get your first and last name?"
-            )
-        if category == "Complaint":
-            return (
-                "I am sorry that happened. I want this to land with the team clearly, not as a vague note. "
-                "Can I get your first and last name?"
-            )
-        if category == "Human Request":
-            return (
-                "Of course. I will make sure a person from the team knows you asked to speak with someone. "
-                "Can I get your first and last name?"
-            )
-        return "I can help with that. Can I get your first and last name?"
-
-    def prompt_for_phone(self):
-        first_name = self.lead["name"].split()[0]
-        return (
-            f"Thank you, {first_name}. What is the best phone number for the team to reach you?"
-        )
-
-    def prompt_for_phone_confirmation(self):
-        return (
-            f"I heard {self.format_phone_for_voice(self.lead['phone'])}. "
-            "Is that the best number?"
-        )
-
-    def prompt_for_address(self):
-        self.address_prompt_count += 1
-        if self.lead["category"] == "Sales":
-            return (
-                "Perfect. The location helps the team confirm the service area and prepare the right options before they call. "
-                "What city or service address is this for?"
-            )
-        return (
-            "Thank you. What is the service address?"
-        )
-
-    def prompt_for_system_status(self):
-        profile = get_industry_profile(self.company_info.get("industry"))
-        if self.lead["priority"] == "High":
-            return (
-                "That helps. Just so the team understands the urgency, "
-                + profile["status_question_high"]
-            )
-        return (
-            "That helps. Just so the team has a better starting point, "
-            + profile["status_question_normal"]
-        )
-
-    def prompt_for_email(self):
-        return (
-            "If you have an email handy, we can add it for follow-up. "
-            "You can also say skip."
-        )
-
-    def prompt_for_preferred_time(self):
-        category = self.lead["category"]
-        if category == "Support" and self.lead["priority"] == "High":
-            return (
-                "Okay, I have the main picture. "
-                "What is the best time for them to reach you?"
-            )
-        if category == "Sales":
-            return (
-                "Great, that gives the team enough context to start the conversation in the right place. "
-                "What is a good time for someone to follow up?"
-            )
-        if category == "Complaint":
-            return (
-                "Thank you for explaining that. I want the follow-up to happen at a time that works for you. "
-                "When is the best time to reach you?"
-            )
-        if category == "Human Request":
-            return (
-                "I will note that you would like a person to follow up. "
-                "What is the best time to reach you?"
-            )
-        return "Thanks. What is the best time for our team to follow up?"
+        self.current_step = "confirmation"
+        return self.build_confirmation()
 
     def intro_for_category(self):
         category = self.lead["category"]
+
         if category == "Support":
-            safety_note = ""
-            if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
-                self.lead["safety_note_given"] = True
-                safety_note = get_industry_profile(self.company_info.get("industry"))["safety_note"]
-            if self.lead["priority"] == "High":
-                return "I am sorry you are dealing with that. I will mark this as a high-priority service issue." + safety_note
-            return "I am sorry you are dealing with that. I will get this noted for the service team." + safety_note
+            return "I'm sorry you're dealing with that. I'll make sure this is noted for the team."
+
         if category == "Sales":
-            return "I would be happy to help get your quote request to the right person."
+            return "I'd be happy to help with that."
+
         if category == "Billing":
-            return "I can help route that to the billing team."
+            return "I can help get that routed to the right person."
+
         if category == "Complaint":
-            return "I am sorry to hear that. I will make sure your concern is documented clearly."
+            return "I'm sorry to hear that. I'd like to make sure your concern is documented properly."
+
         if category == "Human Request":
-            return "Of course. I can document your request and have someone from the team follow up."
-        if category == "Scheduling":
-            return "I can help document that for the scheduling team."
+            return "I can document your request and have someone follow up."
+
         return "I can help with that."
 
-    # -------------------------
-    # Confirmation and close
-    # -------------------------
-    def handle_confirmation(self, msg):
+    # =========================
+    # CONFIRMATION / SOFT CLOSE
+    # =========================
+    def handle_confirmation_message(self, msg):
         text = self.normalize(msg)
 
-        affirmative = {"yes", "correct", "looks good", "that is right", "that's right", "submit", "send it", "all good"}
-        negative = {
-            "no",
-            "not correct",
-            "incorrect",
-            "wrong",
-            "that is wrong",
-            "that's wrong",
-            "not right",
-            "that is not right",
-            "that's not right",
-            "change that",
-            "update that",
-            "wait",
-        }
+        done_phrases = [
+            "yes", "correct", "looks good", "that's right", "that is right",
+            "no", "nope", "nothing else", "that's all", "that is all",
+            "submit", "send it", "all good"
+        ]
 
-        if any(phrase == text or phrase in text for phrase in affirmative):
-            self.awaiting_confirmation = False
+        if any(x in text for x in done_phrases):
             return self.submit_request()
 
-        if any(phrase == text or phrase in text for phrase in negative):
-            self.awaiting_confirmation = False
-            self.lead["possible_transcription_error"] = True
-            self.lead["sms_review_required"] = True
-            self.lead["verification_status"] = "Needs Team Review"
-            self.current_step = "confirmation_correction"
-            return (
-                "No problem. Please restate the part that sounded wrong, "
-                "or say the corrected service note."
+        meaningful_update = any(x in text for x in [
+            "appointment", "reschedule", "cancel",
+            "stopped working", "not working", "no ac", "no air",
+            "no heat", "leak", "water", "broken",
+            "carrier", "trane", "lennox", "financing",
+            "different address", "new address", "another address",
+            "different location", "new location", "another location"
+        ])
+
+        if meaningful_update:
+            special_answer = self.answer_special_question(msg)
+            self.update_context_flags(msg)
+
+            self.lead["issue"] = msg
+            self.classify_issue(msg)
+
+            self.lead["extra_update_count"] += 1
+            self.lead["soft_close_started"] = True
+
+            response_parts = []
+
+            if special_answer:
+                response_parts.append(special_answer)
+
+            if self.lead["existing_appointment"]:
+                response_parts.append(
+                    "I noted that you already have an appointment and may need scheduling help."
+                )
+
+            if self.lead["priority"].lower() == "high":
+                response_parts.append(
+                    "Since your system stopped working, I’ll mark this as a high-priority service issue."
+                )
+
+            if self.lead["different_address_requested"]:
+                response_parts.append(
+                    "I also noted the updated service location."
+                )
+
+            if self.lead["extra_update_count"] >= 2:
+                self.current_step = "complete"
+                self.lead["verified"] = True
+
+                if not self.lead["sms_sent"]:
+                    self.lead["sms_sent"] = True
+                    print("[SMS READY] Send SMS confirmation here.")
+
+                response_parts.append(
+                    "I’ve added that to the request. I’ll submit this now so the team can follow up."
+                )
+
+                return " ".join(response_parts)
+
+            response_parts.append(
+                "I’ve added that to the request. Is there anything else you’d like me to include?"
             )
 
-        self.apply_update(msg)
-        self.awaiting_confirmation = False
-        return "I added that. " + self.next_question()
+            return " ".join(response_parts)
 
-    def handle_phone_confirmation(self, msg):
-        text = self.normalize(msg)
-        phone = self.extract_phone(msg)
-        affirmative = {"yes", "correct", "that is right", "that's right", "yep", "yeah"}
-        negative = {"no", "wrong", "incorrect", "not right", "change it"}
-
-        if phone:
-            self.lead["phone"] = phone
-            return "Got it. " + self.prompt_for_phone_confirmation()
-
-        if any(phrase == text or phrase in text for phrase in affirmative):
-            self.lead["phone_confirmed"] = True
-            self.awaiting_phone_confirmation = False
-            return self.next_question()
-
-        if any(phrase == text or phrase in text for phrase in negative):
-            return "No problem, I want to get that right. Please say or enter the best phone number again, including the area code."
-
-        return (
-            "I want to make sure I heard the number correctly. "
-            f"Was the number {self.format_phone_for_voice(self.lead['phone'])}?"
-        )
-
-    def ask_anything_else(self):
-        self.awaiting_confirmation = False
-        self.awaiting_anything_else = True
-        self.current_step = "anything_else"
-        return (
-            "Got it. Is there anything else you would like the team to know?"
-        )
-
-    def handle_anything_else(self, msg):
-        text = self.normalize(msg)
-        nothing_else = {"no", "nope", "nothing else", "that is all", "that's all", "all good"}
-
-        if any(phrase == text or (" " in phrase and phrase in text) for phrase in nothing_else):
+        if self.lead["soft_close_started"]:
             return self.submit_request()
 
-        self.apply_update(msg)
-        return "I added that to the request. " + self.submit_request()
-
-    def apply_confirmation_correction(self, msg):
-        normalized = self.normalize(msg)
-        name = self.extract_name(msg)
-        phone = self.extract_phone(msg)
-        email = self.extract_email(msg)
-
-        if name:
-            self.lead["name"] = name
-        if phone:
-            self.lead["phone"] = phone
-        if email:
-            self.lead["email"] = email
-
-        if self.looks_like_address(msg):
-            self.lead["address"] = self.clean_corrected_address(msg)
-            unit = self.extract_unit(msg)
-            if unit:
-                self.lead["unit"] = unit
-        elif self.looks_like_time_correction(normalized):
-            self.lead["preferred_time"] = self.clean_corrected_time(msg)
-        elif not phone and not email and not name:
-            corrected_reason = self.clean_corrected_reason(msg)
-            if corrected_reason:
-                self.lead["issue"] = corrected_reason
-                self.lead["issue_summary"] = corrected_reason
-                self.classify_issue(corrected_reason)
-
-        self.lead["possible_transcription_error"] = False
-        self.lead["sms_review_required"] = False
-        self.lead["verification_status"] = "Corrected By Caller"
-
-    def clean_corrected_address(self, msg):
-        cleaned = re.sub(
-            r"^(?:the\s+)?(?:correct\s+)?address\s+(?:is|should be)\s+",
-            "",
-            msg.strip(),
-            flags=re.IGNORECASE,
+        return (
+            "No problem. I can update the request. "
+            "What would you like me to change or add?"
         )
-        return re.sub(r"\s+", " ", cleaned).strip(" .,-")
-
-    def looks_like_time_correction(self, normalized):
-        return any(
-            phrase in normalized
-            for phrase in [
-                "best time",
-                "good time",
-                "better time",
-                "call me",
-                "reach me",
-                "tomorrow",
-                "today",
-                "morning",
-                "afternoon",
-                "evening",
-                "after",
-                "before",
-                "anytime",
-            ]
-        )
-
-    def clean_corrected_time(self, msg):
-        cleaned = re.sub(
-            r"^(?:the\s+)?(?:best|good|better)\s+time\s+(?:is|would be|should be)\s+",
-            "",
-            msg.strip(),
-            flags=re.IGNORECASE,
-        )
-        return re.sub(r"\s+", " ", cleaned).strip(" .,-")
-
-    def clean_corrected_reason(self, msg):
-        cleaned = re.sub(
-            r"\b(?:send|sent)\s+(?:this|it|that)?\s*(?:over|through)\b",
-            "",
-            msg,
-            flags=re.IGNORECASE,
-        )
-        changed = True
-        cleaned = cleaned.strip()
-        while changed:
-            changed = False
-            next_cleaned = re.sub(
-                r"^(?:um|uh|yeah|yes|actually|sorry|no|wait|i said)\s+",
-                "",
-                cleaned,
-                flags=re.IGNORECASE,
-            ).strip()
-            if next_cleaned != cleaned:
-                cleaned = next_cleaned
-                changed = True
-        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,-")
-        return cleaned
-
-    def apply_update(self, msg):
-        self.update_context(msg)
-
-        name = self.extract_name(msg)
-        phone = self.extract_phone(msg)
-        email = self.extract_email(msg)
-
-        if name:
-            self.lead["name"] = name
-        if phone:
-            self.lead["phone"] = phone
-        if email:
-            self.lead["email"] = email
-
-        if self.looks_like_address(msg):
-            self.lead["address"] = msg.strip()
-            unit = self.extract_unit(msg)
-            if unit:
-                self.lead["unit"] = unit
-        elif phone and self.contains_any(msg, ["phone", "number", "reach me"]):
-            return
-        elif email and self.contains_any(msg, ["email", "e mail"]):
-            return
-        else:
-            self.lead["issue_summary"] = self.combine_summary(self.lead["issue_summary"], msg)
-            self.classify_issue(self.lead["issue_summary"])
-
-    def combine_summary(self, old, new):
-        if not old:
-            return new.strip()
-        if new.strip().lower() in old.lower():
-            return old
-        return f"{old}; {new.strip()}"
 
     def submit_request(self):
+        self.lead["verified"] = True
         self.current_step = "complete"
-        reason = self.lead["issue_summary"] or self.lead["issue"] or "your request"
-        appreciation = (
-            "Thank you so much for calling us today. We appreciate your business and value your time."
-        )
-        if self.lead["sms_review_required"]:
-            self.lead["verified"] = False
-            self.lead["verification_status"] = "Needs Team Review"
-            closing_message = (
-                f"I have your reason for calling noted as: {reason}. "
-                "I have submitted the request so the team has it, and I flagged anything that may need confirmation. "
-                + appreciation
-                + " Goodbye."
-            )
-        else:
-            self.lead["verified"] = True
-            self.lead["verification_status"] = "Voice Confirmed"
-            closing_message = (
-                f"I have your reason for calling noted as: {reason}. "
-                "I have submitted your request, and the team will follow up soon. "
-                + appreciation
-                + " Goodbye."
-            )
 
         if not self.lead["sms_sent"]:
-            self.lead["sms_sent"] = False
+            self.lead["sms_sent"] = True
+            print("[SMS READY] Send SMS confirmation here.")
 
-        return closing_message
+        return (
+            "Thank you. I’ve submitted your request, and the team will follow up soon. "
+            "We’ll also send a text message where you can review or update your information if needed."
+        )
 
+    # =========================
+    # MAIN CONVERSATION ENGINE
+    # =========================
+    def process_conversation(self, msg):
+        print("\nSTEP:", self.current_step)
+        print("INPUT:", msg)
+
+        msg = msg.strip()
+
+        self.extract_all_fields(msg)
+        self.update_context_flags(msg)
+
+        if self.current_step == "greeting" and self.is_greeting_only(msg):
+            return "Thank you for calling. How can I help you today?"
+
+        if self.current_step == "confirmation":
+            return self.handle_confirmation_message(msg)
+
+        if self.current_step == "complete":
+            return (
+                "Your request has already been submitted. "
+                "A member of our team will follow up soon."
+            )
+
+        if self.current_step == "email" and self.normalize(msg) in ["skip", "no", "none"]:
+            self.current_step = "confirmation"
+            return self.build_confirmation()
+
+        special_answer = self.answer_special_question(msg)
+
+        if not self.lead["issue"] and not self.is_greeting_only(msg):
+            self.lead["issue"] = msg
+            self.classify_issue(msg)
+
+        if any(x in self.normalize(msg) for x in [
+            "stopped working", "no ac", "no air", "no heat", "leak",
+            "quote", "estimate", "billing", "charged", "complaint",
+            "appointment", "reschedule"
+        ]):
+            self.lead["issue"] = msg
+            self.classify_issue(msg)
+
+        if not self.lead["category"]:
+            self.current_step = "clarify_intent"
+            prefix = special_answer + " " if special_answer else ""
+            return prefix + "Are you calling about a repair, a new installation or quote, billing, or something else?"
+
+        prefix_parts = []
+
+        if special_answer:
+            prefix_parts.append(special_answer)
+
+        if self.current_step in ["greeting", "clarify_intent"]:
+            prefix_parts.append(self.intro_for_category())
+
+        next_question = self.next_missing_question()
+
+        if self.current_step == "confirmation":
+            if prefix_parts:
+                return " ".join(prefix_parts) + "\n\n" + next_question
+            return next_question
+
+        if prefix_parts:
+            return " ".join(prefix_parts) + " " + next_question
+
+        return next_question
+
+    # =========================
+    # FINAL CONFIRMATION
+    # =========================
     def build_confirmation(self):
-        lines = [
-            "Beautiful. Let me read back the important parts so we know the team has the right starting point:",
-            "",
-            f"Name: {self.lead['name']}",
-            f"Phone: {self.lead['phone']}",
-        ]
+        summary = f"""
+Thank you — here is what I have:
 
-        optional_fields = [
-            ("Address", self.lead["address"]),
-            ("Unit", self.lead["unit"]),
-            ("Reason for Call", self.lead["issue_summary"] or self.lead["issue"]),
-            ("System Status", self.lead["system_status"]),
-            ("Existing Appointment", "Yes" if self.lead["existing_appointment"] else ""),
-            ("Appointment Request", self.lead["appointment_action"]),
-            ("Best Time to Reach You", self.lead["preferred_time"]),
-        ]
+Name: {self.lead['name']}
+Phone: {self.lead['phone']}
+"""
 
-        for label, value in optional_fields:
-            if value:
-                lines.append(f"{label}: {value}")
+        if self.lead["address"]:
+            summary += f"Address: {self.lead['address']}\n"
 
-        lines.extend(["", "Does that sound generally right?"])
-        return "\n".join(lines)
+        if self.lead["email"]:
+            summary += f"Email: {self.lead['email']}\n"
+
+        if self.lead["issue"]:
+            summary += f"Issue: {self.lead['issue']}\n"
+
+        if self.lead["existing_appointment"]:
+            summary += "Existing Appointment: Yes\n"
+
+        summary += f"Category: {self.lead['category']}\n"
+        summary += f"Priority: {self.lead['priority']}\n"
+
+        summary += """
+Is this information correct?
+"""
+
+        return summary
