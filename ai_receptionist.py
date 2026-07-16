@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-auto-submit-email-2026-07-01"
+    DIALOGUE_VERSION = "atlas-natural-followup-2026-07-16"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -557,6 +557,9 @@ class AIReceptionist:
 
     def advance_after_field(self, msg):
         text = self.normalize(msg)
+        faq_answer = self.answer_special_question(msg)
+        if faq_answer and self.is_question_only(msg):
+            return faq_answer + " " + self.prompt_for_current_step()
 
         if self.current_step == "email" and text in {"skip", "no", "none", "no email"}:
             self.lead["email"] = "Skipped"
@@ -596,6 +599,23 @@ class AIReceptionist:
             if self.is_likely_emergency(text):
                 self.lead["priority"] = "High"
 
+        return self.next_question()
+
+    def prompt_for_current_step(self):
+        if self.current_step == "name":
+            return self.prompt_for_name()
+        if self.current_step == "phone":
+            return self.prompt_for_phone()
+        if self.current_step == "phone_confirmation":
+            return self.prompt_for_phone_confirmation()
+        if self.current_step == "address":
+            return self.prompt_for_address()
+        if self.current_step == "system_status":
+            return self.prompt_for_system_status()
+        if self.current_step == "email":
+            return self.prompt_for_email()
+        if self.current_step == "preferred_time":
+            return self.prompt_for_preferred_time()
         return self.next_question()
 
     def next_question(self):
@@ -639,6 +659,9 @@ class AIReceptionist:
         if not self.lead["preferred_time"] and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling"}:
             self.current_step = "preferred_time"
             return self.prompt_for_preferred_time()
+
+        if not self.awaiting_anything_else and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling"}:
+            return self.ask_anything_else()
 
         return self.submit_request()
 
@@ -709,11 +732,11 @@ class AIReceptionist:
         profile = get_industry_profile(self.company_info.get("industry"))
         if self.lead["priority"] == "High":
             return (
-                "That helps. One quick detail will help the team understand how urgent this is before they call: "
+                "That helps. Just so the team understands the urgency, "
                 + profile["status_question_high"]
             )
         return (
-            "That helps. One quick detail gives the technician a better starting point: "
+            "That helps. Just so the team has a better starting point, "
             + profile["status_question_normal"]
         )
 
@@ -836,16 +859,16 @@ class AIReceptionist:
     def ask_anything_else(self):
         self.awaiting_confirmation = False
         self.awaiting_anything_else = True
+        self.current_step = "anything_else"
         return (
-            "Great. I have enough to get this moving. "
-            "Is there anything else you would like me to include before I submit it?"
+            "Got it. Is there anything else you would like the team to know?"
         )
 
     def handle_anything_else(self, msg):
         text = self.normalize(msg)
         nothing_else = {"no", "nope", "nothing else", "that is all", "that's all", "all good"}
 
-        if any(phrase == text or phrase in text for phrase in nothing_else):
+        if any(phrase == text or (" " in phrase and phrase in text) for phrase in nothing_else):
             return self.submit_request()
 
         self.apply_update(msg)
