@@ -20,10 +20,10 @@ class AIReceptionist:
         self.address_candidate = ""
 
         self.company_info = {
-            "name": "ABC Heating & Air",
-            "hours": "Monday through Friday from 8 AM to 6 PM",
+            "name": "Cheap Cold Air, Austin's HVAC Experts",
+            "hours": "Monday through Friday from 7 AM to 7 PM, emergency services are available after hours",
             "service_areas": (
-                "Austin, Round Rock, Cedar Park, Pflugerville, Georgetown, "
+                "Austin, Round Rock, Cedar Park, Lakeway, Georgetown, "
                 "downtown Austin, and nearby areas"
             ),
             "industry": "hvac",
