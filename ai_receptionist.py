@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-natural-followup-2026-07-16"
+    DIALOGUE_VERSION = "atlas-duct-callback-2026-07-17"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -336,6 +336,10 @@ class AIReceptionist:
             priority = "High" if self.contains_any(text, profile["high_priority_keywords"]) else "Normal"
             return self.apply_classification("Complaint", priority, "Complaint or missed appointment language.")
 
+        if self.is_duct_cleaning_request(text):
+            self.lead["system_status"] = "Duct or vent cleaning request; no active system issue stated."
+            return self.apply_classification("Support", "Normal", "Duct or vent cleaning service request.")
+
         if self.contains_any(text, profile["sales_keywords"]):
             return self.apply_classification("Sales", "Normal", "Quote, replacement, or installation language.")
 
@@ -347,6 +351,13 @@ class AIReceptionist:
             return self.apply_classification("General Inquiry", "Normal", "General company question.")
 
         return self.apply_classification("General Inquiry", "Normal", "Could not confidently classify.")
+
+    def is_duct_cleaning_request(self, text):
+        duct_words = ["duct", "ducts", "duck", "ducks", "vent", "vents", "air vent", "air vents"]
+        cleaning_words = ["clean", "cleaning", "cleaned", "clean out", "come by"]
+        return any(word in text for word in duct_words) and any(
+            word in text for word in cleaning_words
+        )
 
     def is_likely_emergency(self, text):
         profile = get_industry_profile(self.company_info.get("industry"))
@@ -367,6 +378,7 @@ class AIReceptionist:
         text = msg.strip()
         lower = text.lower()
         text = re.sub(r"\b(?:send|sent)\s+(?:this|it|that)?\s*(?:over|through)\b", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bduck(s)?\b", r"duct\1", text, flags=re.IGNORECASE)
         text = re.sub(r"\s+", " ", text).strip(" .,-")
         lower = text.lower()
         issue_starts = [
@@ -421,7 +433,7 @@ class AIReceptionist:
         if self.contains_any(text, ["hours", "open", "close", "what time"]):
             answers.append(f"Our regular office hours are {self.company_info['hours']}.")
 
-        if self.contains_any(text, ["service area", "do you service", "do you work in", "round rock", "cedar park", "pflugerville", "georgetown"]):
+        if self.is_service_area_question(text):
             city_answer = self.answer_service_area_question(text)
             answers.append(city_answer)
 
@@ -432,6 +444,29 @@ class AIReceptionist:
             answers.append("Availability depends on the schedule and urgency, but I can note that you would like the soonest available follow-up.")
 
         return " ".join(answers)
+
+    def is_service_area_question(self, text):
+        service_area_phrases = [
+            "service area",
+            "do you service",
+            "do you work in",
+            "do you go to",
+            "can you come to",
+            "able to service",
+            "serve",
+        ]
+        service_cities = [
+            "round rock",
+            "cedar park",
+            "pflugerville",
+            "georgetown",
+            "downtown austin",
+            "austin",
+        ]
+        return any(phrase in text for phrase in service_area_phrases) or any(
+            city in text and any(word in text for word in ["service", "serve", "area", "work", "come"])
+            for city in service_cities
+        )
 
     def answer_service_area_question(self, text):
         city_names = {
@@ -451,10 +486,14 @@ class AIReceptionist:
         text = self.normalize(msg)
         question_mark = "?" in msg
         question_phrases = [
+            "service area",
             "do you service",
             "do you work in",
+            "able to service",
+            "do you serve",
             "what are your hours",
             "are you open",
+            "open today",
             "how soon",
             "when can you come",
             "available today",
@@ -484,6 +523,64 @@ class AIReceptionist:
         return (question_mark or any(x in text for x in question_phrases)) and not any(
             x in text for x in action_phrases
         )
+
+    def is_service_area_only(self, msg):
+        text = self.normalize(msg)
+        if not self.is_service_area_question(text):
+            return False
+
+        issue_phrases = [
+            "no ac",
+            "no air",
+            "no heat",
+            "not cooling",
+            "not heating",
+            "completely out",
+            "stopped working",
+            "leaking",
+            "repair",
+            "quote",
+            "estimate",
+            "install",
+            "replace",
+            "billing",
+            "invoice",
+            "reschedule",
+            "cancel",
+            "maintenance",
+            "tune up",
+            "new unit",
+            "furnace",
+            "heater",
+            "air conditioner",
+            "duct",
+            "ducts",
+            "duck",
+            "ducks",
+            "vent",
+            "vents",
+        ]
+        return not any(phrase in text for phrase in issue_phrases)
+
+    def is_no_service_request(self, msg):
+        text = self.normalize(msg)
+        no_request_phrases = [
+            "just checking",
+            "only checking",
+            "just asking",
+            "only asking",
+            "for now",
+            "not right now",
+            "no service needed",
+            "no request",
+            "nothing else",
+            "that is all",
+            "that's all",
+        ]
+        return any(phrase in text for phrase in no_request_phrases)
+
+    def is_general_question_only_summary(self, msg):
+        return "general question only" in self.normalize(msg)
 
     # -------------------------
     # Flow control
@@ -520,11 +617,24 @@ class AIReceptionist:
             return "Thank you, I updated that. " + self.next_question()
 
         if self.current_step == "clarify_intent":
+            faq_answer = self.answer_special_question(msg)
+            if faq_answer and (self.is_question_only(msg) or self.is_service_area_only(msg)):
+                return faq_answer + " What can we help you with today?"
             if self.looks_like_address(msg):
                 return "I caught the location. Before that, what problem should the team help with?"
-            self.lead["issue"] = msg
-            self.lead["issue_summary"] = msg
-            self.classify_issue(msg)
+            if self.is_no_service_request(msg):
+                self.lead["issue"] = "General question only; no service request stated."
+                self.lead["issue_summary"] = "General question only; no service request stated."
+                self.apply_classification(
+                    "General Inquiry",
+                    "Normal",
+                    "Caller asked a general question and did not request service.",
+                )
+                return self.next_question()
+            clean_reason = self.clean_customer_reason(msg)
+            self.lead["issue"] = clean_reason
+            self.lead["issue_summary"] = clean_reason
+            self.classify_issue(clean_reason)
             if self.lead["category"] == "General Inquiry" and self.is_vague_issue(msg):
                 return "I want the service note to be clear. What problem should the team help with?"
             return self.next_question()
@@ -534,9 +644,11 @@ class AIReceptionist:
 
         faq_answer = self.answer_special_question(msg)
 
-        if faq_answer and not self.lead["issue"] and self.is_question_only(msg):
+        if faq_answer and not self.lead["issue"] and (
+            self.is_question_only(msg) or self.is_service_area_only(msg)
+        ):
             self.current_step = "clarify_intent"
-            return faq_answer + " What is going on with your system today?"
+            return faq_answer + " What can we help you with today?"
 
         if not self.lead["issue"] and not self.is_greeting_only(msg):
             clean_reason = self.clean_customer_reason(msg)
@@ -548,7 +660,7 @@ class AIReceptionist:
             self.lead["issue"] = ""
             self.lead["issue_summary"] = ""
             self.current_step = "clarify_intent"
-            return faq_answer + " What is going on with your system today?"
+            return faq_answer + " What can we help you with today?"
 
         question = self.next_question()
         if faq_answer:
@@ -625,6 +737,7 @@ class AIReceptionist:
             self.lead["phone_confirmed"]
             and category in {"", "General Inquiry"}
             and self.is_vague_issue(self.lead["issue_summary"] or self.lead["issue"])
+            and not self.is_general_question_only_summary(self.lead["issue_summary"] or self.lead["issue"])
         ):
             self.current_step = "clarify_intent"
             return (
@@ -656,11 +769,11 @@ class AIReceptionist:
             self.current_step = "email"
             return self.prompt_for_email()
 
-        if not self.lead["preferred_time"] and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling"}:
+        if not self.lead["preferred_time"] and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling", "General Inquiry"}:
             self.current_step = "preferred_time"
             return self.prompt_for_preferred_time()
 
-        if not self.awaiting_anything_else and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling"}:
+        if not self.awaiting_anything_else and category in {"Support", "Sales", "Billing", "Complaint", "Human Request", "Scheduling", "General Inquiry"}:
             return self.ask_anything_else()
 
         return self.submit_request()
@@ -768,6 +881,11 @@ class AIReceptionist:
                 "I will note that you would like a person to follow up. "
                 "What is the best time to reach you?"
             )
+        if category == "General Inquiry":
+            return (
+                "No problem. If the team needs to follow up, "
+                "what is the best callback time?"
+            )
         return "Thanks. What is the best time for our team to follow up?"
 
     def intro_for_category(self):
@@ -861,12 +979,16 @@ class AIReceptionist:
         self.awaiting_anything_else = True
         self.current_step = "anything_else"
         return (
-            "Got it. Is there anything else you would like the team to know?"
+            "Got it. Is there anything else you would like to ask or have the team know?"
         )
 
     def handle_anything_else(self, msg):
-        text = self.normalize(msg)
+        text = self.normalize(msg).strip(" .,-")
         nothing_else = {"no", "nope", "nothing else", "that is all", "that's all", "all good"}
+        faq_answer = self.answer_special_question(msg)
+
+        if faq_answer and (self.is_question_only(msg) or self.is_service_area_only(msg)):
+            return faq_answer + " Is there anything else you would like to ask or have the team know?"
 
         if any(phrase == text or (" " in phrase and phrase in text) for phrase in nothing_else):
             return self.submit_request()
@@ -1002,7 +1124,7 @@ class AIReceptionist:
 
     def submit_request(self):
         self.current_step = "complete"
-        reason = self.lead["issue_summary"] or self.lead["issue"] or "your request"
+        reason = (self.lead["issue_summary"] or self.lead["issue"] or "your request").strip(" .,-")
         appreciation = (
             "Thank you so much for calling us today. We appreciate your business and value your time."
         )
