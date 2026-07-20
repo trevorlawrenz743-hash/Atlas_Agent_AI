@@ -20,7 +20,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-duct-callback-2026-07-17"
+TWILIO_APP_VERSION = "atlas-services-faq-2026-07-20"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
