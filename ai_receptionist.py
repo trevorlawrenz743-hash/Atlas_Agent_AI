@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-services-faq-2026-07-20"
+    DIALOGUE_VERSION = "atlas-first-question-faq-2026-07-20"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -525,6 +525,12 @@ class AIReceptionist:
             "do you do",
             "can you do",
             "can you help with",
+            "can you repair",
+            "can you guys repair",
+            "can you install",
+            "can you guys install",
+            "can you service",
+            "can you guys service",
             "do you handle",
             "do you install",
             "do you repair",
@@ -599,13 +605,23 @@ class AIReceptionist:
     def is_service_area_question(self, text):
         service_area_phrases = [
             "service area",
+            "service areas",
+            "areas do you service",
+            "areas do you cover",
+            "where do you service",
+            "where do you guys service",
+            "where do you cover",
+            "where do you guys cover",
+            "what areas",
             "do you service in",
             "do you service the area",
             "do you service my area",
+            "do you service around",
             "do you work in",
             "do you go to",
             "can you come to",
             "able to service",
+            "cover",
             "serve",
         ]
         service_cities = [
@@ -647,6 +663,13 @@ class AIReceptionist:
             "what are your hours",
             "are you open",
             "open today",
+            "what areas",
+            "areas do you service",
+            "areas do you cover",
+            "where do you service",
+            "where do you guys service",
+            "where do you cover",
+            "where do you guys cover",
             "how soon",
             "when can you come",
             "available today",
@@ -657,6 +680,12 @@ class AIReceptionist:
             "do you offer",
             "do you do",
             "can you help with",
+            "can you repair",
+            "can you guys repair",
+            "can you install",
+            "can you guys install",
+            "can you service",
+            "can you guys service",
             "do you install",
             "do you repair",
         ]
