@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-duct-callback-2026-07-17"
+    DIALOGUE_VERSION = "atlas-services-faq-2026-07-20"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -26,6 +26,15 @@ class AIReceptionist:
                 "Austin, Round Rock, Cedar Park, Lakeway, Georgetown, "
                 "downtown Austin, and nearby areas"
             ),
+            "services": {
+                "air conditioning": "air conditioning repair and installation",
+                "heat pump": "heat pump repair and installation",
+                "furnace": "furnace repair and installation",
+                "ductless": "ductless system installation and repair",
+                "ductwork": "ductwork installation and repair",
+                "indoor air": "indoor air services, including dehumidifier and humidifier installation and repair",
+                "thermostat": "thermostat repair and installation",
+            },
             "industry": "hvac",
             "assistant_name": "Atlas",
         }
@@ -214,17 +223,75 @@ class AIReceptionist:
             "drive",
             "ave",
             "avenue",
+            "blvd",
+            "boulevard",
             "ln",
             "lane",
-            "blvd",
             "court",
             "ct",
+            "circle",
+            "cir",
+            "place",
+            "pl",
+            "parkway",
+            "pkwy",
+            "highway",
+            "hwy",
+            "terrace",
+            "ter",
+            "loop",
             "way",
             "trail",
         ]
-        return bool(re.search(r"\d{2,6}\s+\w+", text)) and any(
-            word.strip(".,") in street_words for word in text.split()
-        )
+        city_words = [
+            "austin",
+            "round rock",
+            "cedar park",
+            "pflugerville",
+            "georgetown",
+        ]
+        number_words = {
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+            "twenty",
+            "thirty",
+            "forty",
+            "fifty",
+            "sixty",
+            "seventy",
+            "eighty",
+            "ninety",
+            "hundred",
+            "thousand",
+        }
+        words = [word.strip(".,") for word in text.split()]
+        has_digit_number = bool(re.search(r"\b\d{1,6}\b", text))
+        has_spoken_number = any(word in number_words for word in words[:6])
+        has_street_word = any(word in street_words for word in words)
+        has_city = any(city in text for city in city_words)
+
+        if has_digit_number and has_street_word:
+            return True
+        if has_spoken_number and has_street_word:
+            return True
+        return self.current_step == "address" and has_digit_number and has_city
 
     def looks_like_service_location(self, msg):
         text = self.normalize(msg)
@@ -437,6 +504,9 @@ class AIReceptionist:
             city_answer = self.answer_service_area_question(text)
             answers.append(city_answer)
 
+        if self.is_services_question(text):
+            answers.append(self.answer_services_question(text))
+
         if self.contains_any(text, ["financing", "finance", "payment plan", "monthly payments"]):
             answers.append("Our team can review available financing options with you.")
 
@@ -445,10 +515,93 @@ class AIReceptionist:
 
         return " ".join(answers)
 
+    def is_services_question(self, text):
+        service_question_phrases = [
+            "what services",
+            "which services",
+            "services do you offer",
+            "services you offer",
+            "do you offer",
+            "do you do",
+            "can you do",
+            "can you help with",
+            "do you handle",
+            "do you install",
+            "do you repair",
+            "do you service",
+        ]
+        service_words = [
+            "air conditioning",
+            "ac",
+            "a c",
+            "heat pump",
+            "furnace",
+            "ductless",
+            "mini split",
+            "ductwork",
+            "duct work",
+            "duct",
+            "vents",
+            "indoor air",
+            "dehumidifier",
+            "humidifier",
+            "thermostat",
+        ]
+        general_service_question = any(phrase in text for phrase in service_question_phrases)
+        mentions_hvac_service = any(word in text for word in service_words)
+        return (
+            "what services" in text
+            or "which services" in text
+            or ("services" in text and "offer" in text)
+            or (general_service_question and mentions_hvac_service)
+        )
+
+    def answer_services_question(self, text):
+        services = self.company_info["services"]
+        specific_services = [
+            (["heat pump"], services["heat pump"]),
+            (["furnace"], services["furnace"]),
+            (["ductless", "mini split"], services["ductless"]),
+            (["ductwork", "duct work", "duct", "vents"], services["ductwork"]),
+            (["indoor air", "air quality", "dehumidifier", "humidifier"], services["indoor air"]),
+            (["thermostat"], services["thermostat"]),
+            (["air conditioning", "ac", "a c"], services["air conditioning"]),
+        ]
+        for keywords, service in specific_services:
+            if any(self.matches_service_keyword(text, keyword) for keyword in keywords):
+                return f"Yes, we help with {service}."
+        return (
+            "We help with air conditioning, heat pumps, furnaces, ductless systems, "
+            "ductwork, indoor air comfort, and thermostats."
+        )
+
+    def matches_service_keyword(self, text, keyword):
+        if keyword in {"ac", "a c"}:
+            return bool(re.search(r"\ba\s*c\b", text))
+        return keyword in text
+
+    def is_services_question_only(self, msg):
+        text = self.normalize(msg)
+        request_phrases = [
+            "i need",
+            "i want",
+            "i would like",
+            "schedule",
+            "book",
+            "send someone",
+            "come out",
+            "appointment",
+            "quote",
+            "estimate",
+        ]
+        return self.is_services_question(text) and not any(phrase in text for phrase in request_phrases)
+
     def is_service_area_question(self, text):
         service_area_phrases = [
             "service area",
-            "do you service",
+            "do you service in",
+            "do you service the area",
+            "do you service my area",
             "do you work in",
             "do you go to",
             "can you come to",
@@ -498,6 +651,14 @@ class AIReceptionist:
             "when can you come",
             "available today",
             "earliest appointment",
+            "what services",
+            "which services",
+            "services do you offer",
+            "do you offer",
+            "do you do",
+            "can you help with",
+            "do you install",
+            "do you repair",
         ]
         action_phrases = [
             "no ac",
@@ -520,6 +681,8 @@ class AIReceptionist:
             "talk to",
             "person",
         ]
+        if self.is_services_question_only(msg):
+            return True
         return (question_mark or any(x in text for x in question_phrases)) and not any(
             x in text for x in action_phrases
         )
@@ -618,7 +781,11 @@ class AIReceptionist:
 
         if self.current_step == "clarify_intent":
             faq_answer = self.answer_special_question(msg)
-            if faq_answer and (self.is_question_only(msg) or self.is_service_area_only(msg)):
+            if faq_answer and (
+                self.is_question_only(msg)
+                or self.is_service_area_only(msg)
+                or self.is_services_question_only(msg)
+            ):
                 return faq_answer + " What can we help you with today?"
             if self.looks_like_address(msg):
                 return "I caught the location. Before that, what problem should the team help with?"
@@ -645,7 +812,9 @@ class AIReceptionist:
         faq_answer = self.answer_special_question(msg)
 
         if faq_answer and not self.lead["issue"] and (
-            self.is_question_only(msg) or self.is_service_area_only(msg)
+            self.is_question_only(msg)
+            or self.is_service_area_only(msg)
+            or self.is_services_question_only(msg)
         ):
             self.current_step = "clarify_intent"
             return faq_answer + " What can we help you with today?"
