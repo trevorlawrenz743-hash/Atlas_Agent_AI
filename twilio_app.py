@@ -20,7 +20,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-service-capability-2026-07-20"
+TWILIO_APP_VERSION = "atlas-hangup-email-2026-07-20"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -756,6 +756,65 @@ def complete_call_after_response(call_sid, lead, transcript, form_payload):
     print("[CALL COMPLETION RESULT]", {"call_sid": call_sid, "db_saved": db_saved, "email_sent": email_sent})
 
 
+def complete_active_call_if_ready(call_sid, form_payload, source):
+    if call_sid in completed_call_sids:
+        print("[CALL COMPLETION SKIPPED]", {"call_sid": call_sid, "source": source, "reason": "already completed"})
+        return False
+
+    session_state = sessions.get(call_sid)
+    if not session_state:
+        print("[CALL COMPLETION SKIPPED]", {"call_sid": call_sid, "source": source, "reason": "no active session"})
+        return False
+
+    bot = session_state.get("bot")
+    if not bot:
+        print("[CALL COMPLETION SKIPPED]", {"call_sid": call_sid, "source": source, "reason": "no bot"})
+        return False
+
+    if not lead_has_minimum_for_business_email(bot):
+        print(
+            "[CALL COMPLETION SKIPPED]",
+            {
+                "call_sid": call_sid,
+                "source": source,
+                "reason": "minimum lead fields missing",
+                "has_phone": bool(bot.lead.get("phone")),
+                "phone_confirmed": bot.lead.get("phone_confirmed"),
+                "has_issue": bool(bot.lead.get("issue_summary") or bot.lead.get("issue")),
+            },
+        )
+        return False
+
+    prompt = force_complete_with_current_lead(bot)
+    log_bot_dialogue(call_sid, prompt, bot.current_step, source)
+    add_transcript_turn(
+        call_sid,
+        customer=f"[call ended before final prompt: {source}]",
+        receptionist=prompt,
+        metadata={"step": bot.current_step, "auto_completed": True, "source": source},
+    )
+    lead_snapshot = dict(bot.lead)
+    transcript_snapshot = list(session_state.get("transcript", []))
+    print(
+        "[CALL PARTIAL COMPLETE TRIGGER]",
+        {
+            "call_sid": call_sid,
+            "source": source,
+            "email_provider": EMAIL_PROVIDER,
+            "resend_api_key_found": bool(RESEND_API_KEY),
+            "fallback_business_email_found": bool(BUSINESS_NOTIFICATION_EMAIL),
+        },
+    )
+    threading.Thread(
+        target=complete_call_after_response,
+        args=(call_sid, lead_snapshot, transcript_snapshot, form_payload),
+        daemon=False,
+    ).start()
+    completed_call_sids.add(call_sid)
+    sessions.pop(call_sid, None)
+    return True
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return {
@@ -831,6 +890,18 @@ def voice():
         metadata={"step": bot.current_step},
     )
     return xml_response(build_twiml(prompt, bot, call_sid))
+
+
+@app.route("/call-status", methods=["POST"])
+def call_status():
+    call_sid = get_call_sid()
+    call_status_value = request.form.get("CallStatus", "")
+    print("[CALL STATUS]", {"call_sid": call_sid, "status": call_status_value})
+
+    if call_status_value in {"completed", "busy", "failed", "no-answer", "canceled"}:
+        complete_active_call_if_ready(call_sid, dict(request.form), f"status-{call_status_value}")
+
+    return ("", 204)
 
 
 @app.route("/repeat/<call_sid>", methods=["POST"])
