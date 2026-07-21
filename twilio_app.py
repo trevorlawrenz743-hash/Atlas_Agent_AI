@@ -21,7 +21,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-sales-address-zip-2026-07-21"
+TWILIO_APP_VERSION = "atlas-script-debug-2026-07-21"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -215,6 +215,17 @@ def setup_call_context(call_sid, bot):
             business_config = get_business_config_for_call(db_session, form_payload.get("To", ""))
             apply_business_config_to_bot(bot, business_config)
             session_state["business_config"] = business_config
+            print(
+                "[BUSINESS CONFIG]",
+                {
+                    "call_sid": call_sid,
+                    "to": form_payload.get("To", ""),
+                    "business_id": business_config.business_id,
+                    "company_name": business_config.company_name,
+                    "greeting_script_found": bool(business_config.greeting_script),
+                    "closing_script_found": bool(business_config.closing_script),
+                },
+            )
 
             if business_config.business_id:
                 customer = CustomerRepository(db_session).get_by_phone(
@@ -891,6 +902,35 @@ def version():
         "from_email_found": bool(SMTP_FROM_EMAIL),
         "fallback_business_email_found": bool(BUSINESS_NOTIFICATION_EMAIL),
     }
+
+
+@app.route("/business-config-debug", methods=["GET"])
+def business_config_debug():
+    to_phone = request.args.get("to", "")
+    if not DB_AVAILABLE:
+        return {
+            "database_layer_available": False,
+            "database_import_error": DB_IMPORT_ERROR,
+        }, 503
+
+    try:
+        with session_scope() as db_session:
+            business_config = get_business_config_for_call(db_session, to_phone)
+            return {
+                "to": to_phone,
+                "business_id": business_config.business_id,
+                "company_name": business_config.company_name,
+                "greeting_name": business_config.greeting_name,
+                "assistant_name": business_config.assistant_name,
+                "notification_email_found": bool(business_config.notification_email),
+                "greeting_script_found": bool(business_config.greeting_script),
+                "closing_script_found": bool(business_config.closing_script),
+                "greeting_script_preview": business_config.greeting_script[:160],
+                "closing_script_preview": business_config.closing_script[:160],
+            }
+    except Exception as exc:
+        print("[BUSINESS CONFIG DEBUG ERROR]", repr(exc))
+        return {"error": repr(exc)}, 500
 
 
 @app.route("/voice-test", methods=["GET", "POST"])
