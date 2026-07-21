@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-hangup-email-2026-07-20"
+    DIALOGUE_VERSION = "atlas-sales-address-zip-2026-07-21"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -37,6 +37,8 @@ class AIReceptionist:
             },
             "industry": "hvac",
             "assistant_name": "Atlas",
+            "greeting_script": "",
+            "closing_script": "",
         }
 
         self.lead = {
@@ -44,6 +46,7 @@ class AIReceptionist:
             "phone": "",
             "email": "",
             "address": "",
+            "zip_code": "",
             "unit": "",
             "customer_type": "",
             "issue": "",
@@ -79,6 +82,40 @@ class AIReceptionist:
         normalized = self.normalize(text)
         return any(phrase in normalized for phrase in phrases)
 
+    def render_business_script(self, script, **values):
+        if not script:
+            return ""
+        defaults = {
+            "business_name": self.company_info.get("name", ""),
+            "assistant_name": self.company_info.get("assistant_name", "Atlas"),
+            "first_name": self.lead.get("name", "").split()[0] if self.lead.get("name") else "",
+            "reason": self.lead.get("issue_summary") or self.lead.get("issue") or "",
+        }
+        defaults.update(values)
+        try:
+            return script.format(**defaults).strip()
+        except (KeyError, ValueError):
+            return script.strip()
+
+    def build_greeting(self):
+        custom_greeting = self.render_business_script(self.company_info.get("greeting_script", ""))
+        if custom_greeting:
+            return custom_greeting
+        return (
+            f"Thank you for calling {self.company_info['name']}. "
+            f"I am {self.company_info.get('assistant_name', 'Atlas')}, your virtual assistant. "
+            "How can I help you today?"
+        )
+
+    def build_closing_appreciation(self, reason):
+        custom_closing = self.render_business_script(
+            self.company_info.get("closing_script", ""),
+            reason=reason,
+        )
+        if custom_closing:
+            return custom_closing
+        return "Thank you so much for calling us today. We appreciate your business and value your time. Goodbye."
+
     def is_greeting_only(self, msg):
         return self.normalize(msg) in {
             "hello",
@@ -102,6 +139,10 @@ class AIReceptionist:
             digits = digits[1:]
         return digits if len(digits) == 10 else None
 
+    def extract_zip_code(self, msg):
+        match = re.search(r"\b\d{5}(?:-\d{4})?\b", msg)
+        return match.group(0) if match else None
+
     def format_phone_for_voice(self, phone):
         if len(phone) != 10:
             return phone
@@ -110,6 +151,7 @@ class AIReceptionist:
     def is_valid_name(self, name):
         bad_words = {
             "yes",
+            "and",
             "yeah",
             "yep",
             "sure",
@@ -153,6 +195,7 @@ class AIReceptionist:
         candidate = re.sub(r"\s+", " ", candidate)
         filler_prefixes = [
             "yes",
+            "and",
             "yeah",
             "yep",
             "sure",
@@ -367,6 +410,7 @@ class AIReceptionist:
         phone = self.extract_phone(msg)
         email = self.extract_email(msg)
         unit = self.extract_unit(msg)
+        zip_code = self.extract_zip_code(msg)
 
         if name and not self.lead["name"]:
             self.lead["name"] = name
@@ -376,6 +420,8 @@ class AIReceptionist:
             self.lead["email"] = email
         if unit:
             self.lead["unit"] = unit
+        if zip_code and not self.lead["zip_code"] and self.current_step in {"address", "zip_code"}:
+            self.lead["zip_code"] = zip_code
         if self.current_step == "address" and self.looks_like_address(msg):
             self.lead["address"] = msg.strip()
 
@@ -852,10 +898,7 @@ class AIReceptionist:
             return "Your request has already been submitted. A member of our team will follow up soon."
 
         if self.current_step == "greeting" and self.is_greeting_only(msg):
-            return (
-                f"Thank you for calling {self.company_info['name']}. "
-                "I am Atlas, your virtual assistant. How can I help you today?"
-            )
+            return self.build_greeting()
 
         if self.awaiting_anything_else:
             return self.handle_anything_else(msg)
@@ -898,7 +941,7 @@ class AIReceptionist:
                 return "I want the service note to be clear. What problem should the team help with?"
             return self.next_question()
 
-        if self.current_step in {"name", "phone", "email", "address", "preferred_time", "system_status"}:
+        if self.current_step in {"name", "phone", "email", "address", "zip_code", "preferred_time", "system_status"}:
             return self.advance_after_field(msg)
 
         faq_answer = self.answer_special_question(msg)
@@ -930,11 +973,12 @@ class AIReceptionist:
 
     def advance_after_field(self, msg):
         text = self.normalize(msg)
+        control_text = text.strip(" .,-")
         faq_answer = self.answer_special_question(msg)
         if faq_answer and self.is_question_only(msg):
             return faq_answer + " " + self.prompt_for_current_step()
 
-        if self.current_step == "email" and text in {"skip", "no", "none", "no email"}:
+        if self.current_step == "email" and control_text in {"skip", "no", "none", "no email"}:
             self.lead["email"] = "Skipped"
 
         if self.current_step == "phone" and self.lead["phone"] and not self.lead["phone_confirmed"]:
@@ -945,8 +989,14 @@ class AIReceptionist:
         if self.current_step == "address" and not self.lead["address"]:
             if self.looks_like_address(msg):
                 self.lead["address"] = msg.strip()
+                zip_code = self.extract_zip_code(msg)
+                if zip_code:
+                    self.lead["zip_code"] = zip_code
             elif self.lead["category"] == "Sales" and self.looks_like_service_location(msg):
                 self.lead["address"] = msg.strip()
+                zip_code = self.extract_zip_code(msg)
+                if zip_code:
+                    self.lead["zip_code"] = zip_code
             elif self.address_prompt_count >= 2:
                 self.lead["address"] = self.address_candidate or msg.strip() or "Needs team review"
                 self.lead["possible_transcription_error"] = True
@@ -967,6 +1017,10 @@ class AIReceptionist:
         if self.current_step == "preferred_time":
             self.lead["preferred_time"] = msg.strip()
 
+        if self.current_step == "zip_code":
+            zip_code = self.extract_zip_code(msg)
+            self.lead["zip_code"] = zip_code or msg.strip()
+
         if self.current_step == "system_status":
             self.lead["system_status"] = msg.strip()
             if self.is_likely_emergency(text):
@@ -983,6 +1037,8 @@ class AIReceptionist:
             return self.prompt_for_phone_confirmation()
         if self.current_step == "address":
             return self.prompt_for_address()
+        if self.current_step == "zip_code":
+            return self.prompt_for_zip_code()
         if self.current_step == "system_status":
             return self.prompt_for_system_status()
         if self.current_step == "email":
@@ -1021,6 +1077,10 @@ class AIReceptionist:
         if category in {"Support", "Sales"} and not self.lead["address"]:
             self.current_step = "address"
             return self.prompt_for_address()
+
+        if category in {"Support", "Sales"} and not self.lead["zip_code"]:
+            self.current_step = "zip_code"
+            return self.prompt_for_zip_code()
 
         if category == "Support" and not self.lead["system_status"]:
             self.current_step = "system_status"
@@ -1101,6 +1161,9 @@ class AIReceptionist:
         return (
             "Thank you. What is the service address?"
         )
+
+    def prompt_for_zip_code(self):
+        return "And what is the ZIP code for that location?"
 
     def prompt_for_system_status(self):
         profile = get_industry_profile(self.company_info.get("industry"))
@@ -1386,17 +1449,14 @@ class AIReceptionist:
     def submit_request(self):
         self.current_step = "complete"
         reason = (self.lead["issue_summary"] or self.lead["issue"] or "your request").strip(" .,-")
-        appreciation = (
-            "Thank you so much for calling us today. We appreciate your business and value your time."
-        )
+        closing_appreciation = self.build_closing_appreciation(reason)
         if self.lead["sms_review_required"]:
             self.lead["verified"] = False
             self.lead["verification_status"] = "Needs Team Review"
             closing_message = (
                 f"I have your reason for calling noted as: {reason}. "
                 "I have submitted the request so the team has it, and I flagged anything that may need confirmation. "
-                + appreciation
-                + " Goodbye."
+                + closing_appreciation
             )
         else:
             self.lead["verified"] = True
@@ -1404,8 +1464,7 @@ class AIReceptionist:
             closing_message = (
                 f"I have your reason for calling noted as: {reason}. "
                 "I have submitted your request, and the team will follow up soon. "
-                + appreciation
-                + " Goodbye."
+                + closing_appreciation
             )
 
         if not self.lead["sms_sent"]:
@@ -1423,6 +1482,7 @@ class AIReceptionist:
 
         optional_fields = [
             ("Address", self.lead["address"]),
+            ("ZIP Code", self.lead["zip_code"]),
             ("Unit", self.lead["unit"]),
             ("Reason for Call", self.lead["issue_summary"] or self.lead["issue"]),
             ("System Status", self.lead["system_status"]),
