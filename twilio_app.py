@@ -21,7 +21,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-script-debug-2026-07-21"
+TWILIO_APP_VERSION = "atlas-business-config-safe-2026-07-21"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -222,8 +222,8 @@ def setup_call_context(call_sid, bot):
                     "to": form_payload.get("To", ""),
                     "business_id": business_config.business_id,
                     "company_name": business_config.company_name,
-                    "greeting_script_found": bool(business_config.greeting_script),
-                    "closing_script_found": bool(business_config.closing_script),
+                    "greeting_script_found": bool(getattr(business_config, "greeting_script", "")),
+                    "closing_script_found": bool(getattr(business_config, "closing_script", "")),
                 },
             )
 
@@ -916,6 +916,8 @@ def business_config_debug():
     try:
         with session_scope() as db_session:
             business_config = get_business_config_for_call(db_session, to_phone)
+            greeting_script = getattr(business_config, "greeting_script", "") or ""
+            closing_script = getattr(business_config, "closing_script", "") or ""
             return {
                 "to": to_phone,
                 "business_id": business_config.business_id,
@@ -923,10 +925,10 @@ def business_config_debug():
                 "greeting_name": business_config.greeting_name,
                 "assistant_name": business_config.assistant_name,
                 "notification_email_found": bool(business_config.notification_email),
-                "greeting_script_found": bool(business_config.greeting_script),
-                "closing_script_found": bool(business_config.closing_script),
-                "greeting_script_preview": business_config.greeting_script[:160],
-                "closing_script_preview": business_config.closing_script[:160],
+                "greeting_script_found": bool(greeting_script),
+                "closing_script_found": bool(closing_script),
+                "greeting_script_preview": greeting_script[:160],
+                "closing_script_preview": closing_script[:160],
             }
     except Exception as exc:
         print("[BUSINESS CONFIG DEBUG ERROR]", repr(exc))
