@@ -7,6 +7,8 @@ CREATE TABLE businesses (
     notification_email VARCHAR(255) NOT NULL DEFAULT '',
     timezone VARCHAR(80) NOT NULL DEFAULT 'America/Chicago',
     service_areas TEXT NOT NULL DEFAULT '',
+    greeting_script TEXT NOT NULL DEFAULT '',
+    closing_script TEXT NOT NULL DEFAULT '',
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
@@ -28,6 +30,7 @@ CREATE TABLE customers (
     last_name VARCHAR(120) NOT NULL DEFAULT '',
     email VARCHAR(255) NOT NULL DEFAULT '',
     last_service_address TEXT NOT NULL DEFAULT '',
+    last_service_zip VARCHAR(20) NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     UNIQUE (business_id, phone)
@@ -55,6 +58,7 @@ CREATE TABLE service_requests (
     priority VARCHAR(40) NOT NULL DEFAULT 'Normal',
     issue_summary TEXT NOT NULL DEFAULT '',
     service_address TEXT NOT NULL DEFAULT '',
+    service_zip VARCHAR(20) NOT NULL DEFAULT '',
     preferred_time VARCHAR(255) NOT NULL DEFAULT '',
     system_status TEXT NOT NULL DEFAULT '',
     status VARCHAR(40) NOT NULL DEFAULT 'new',
