@@ -44,6 +44,8 @@ class BusinessRepository:
         industry="hvac",
         service_areas="",
         notification_email="",
+        greeting_script="",
+        closing_script="",
     ):
         business = Business(
             name=name,
@@ -53,6 +55,8 @@ class BusinessRepository:
             industry=industry,
             service_areas=service_areas,
             notification_email=notification_email,
+            greeting_script=greeting_script,
+            closing_script=closing_script,
         )
         self.session.add(business)
         self.session.flush()
@@ -93,11 +97,13 @@ class CustomerRepository:
             customer.email = lead["email"]
         if lead.get("address"):
             customer.last_service_address = lead["address"]
+        if lead.get("zip_code"):
+            customer.last_service_zip = lead["zip_code"]
 
         self.session.flush()
         return customer
 
-    def update_customer_details(self, customer_id, name="", email="", service_address=""):
+    def update_customer_details(self, customer_id, name="", email="", service_address="", service_zip=""):
         customer = self.session.get(Customer, customer_id)
         if not customer:
             return None
@@ -110,6 +116,8 @@ class CustomerRepository:
             customer.email = email
         if service_address:
             customer.last_service_address = service_address
+        if service_zip:
+            customer.last_service_zip = service_zip
 
         self.session.flush()
         return customer
@@ -151,6 +159,7 @@ class ServiceRequestRepository:
             priority=lead.get("priority", "Normal"),
             issue_summary=lead.get("issue_summary") or lead.get("issue") or "",
             service_address=lead.get("address", ""),
+            service_zip=lead.get("zip_code", ""),
             preferred_time=lead.get("preferred_time", ""),
             system_status=lead.get("system_status", ""),
             sms_review_required=bool(lead.get("sms_review_required")),
@@ -171,6 +180,7 @@ class ServiceRequestRepository:
         self,
         service_request_id,
         service_address="",
+        service_zip="",
         issue_summary="",
         preferred_time="",
     ):
@@ -180,6 +190,8 @@ class ServiceRequestRepository:
 
         if service_address:
             request.service_address = service_address
+        if service_zip:
+            request.service_zip = service_zip
         if issue_summary:
             request.issue_summary = issue_summary
         if preferred_time:
