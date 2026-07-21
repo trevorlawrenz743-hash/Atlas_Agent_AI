@@ -45,6 +45,8 @@ def ensure_lightweight_migrations():
         return
 
     business_columns = {column["name"] for column in inspector.get_columns("businesses")}
+    customer_columns = {column["name"] for column in inspector.get_columns("customers")}
+    service_request_columns = {column["name"] for column in inspector.get_columns("service_requests")}
     if "industry" not in business_columns:
         with engine.begin() as connection:
             connection.execute(
@@ -54,6 +56,26 @@ def ensure_lightweight_migrations():
         with engine.begin() as connection:
             connection.execute(
                 text("ALTER TABLE businesses ADD COLUMN notification_email VARCHAR(255) NOT NULL DEFAULT ''")
+            )
+    if "greeting_script" not in business_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE businesses ADD COLUMN greeting_script TEXT NOT NULL DEFAULT ''")
+            )
+    if "closing_script" not in business_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE businesses ADD COLUMN closing_script TEXT NOT NULL DEFAULT ''")
+            )
+    if "last_service_zip" not in customer_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE customers ADD COLUMN last_service_zip VARCHAR(20) NOT NULL DEFAULT ''")
+            )
+    if "service_zip" not in service_request_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE service_requests ADD COLUMN service_zip VARCHAR(20) NOT NULL DEFAULT ''")
             )
 
 
@@ -76,4 +98,3 @@ def get_session():
         yield session
     finally:
         session.close()
-
