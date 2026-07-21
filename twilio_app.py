@@ -21,7 +21,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-multi-email-2026-07-21"
+TWILIO_APP_VERSION = "atlas-sales-address-zip-2026-07-21"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -193,6 +193,8 @@ def apply_returning_customer_to_bot(bot, customer):
         bot.lead["email"] = customer.email
     if getattr(customer, "last_service_address", ""):
         bot.lead["address"] = customer.last_service_address
+    if getattr(customer, "last_service_zip", ""):
+        bot.lead["zip_code"] = customer.last_service_zip
 
 
 def setup_call_context(call_sid, bot):
@@ -227,6 +229,7 @@ def setup_call_context(call_sid, bot):
                         "phone": customer.phone,
                         "email": customer.email,
                         "last_service_address": customer.last_service_address,
+                        "last_service_zip": getattr(customer, "last_service_zip", ""),
                     }
                     apply_returning_customer_to_bot(bot, customer)
     except Exception as exc:
@@ -242,6 +245,13 @@ def returning_customer_greeting(bot, customer_snapshot):
     first_name = customer_snapshot.get("first_name") or bot.lead.get("name", "").split()[0]
     if not first_name:
         return None
+
+    custom_greeting = bot.render_business_script(
+        bot.company_info.get("greeting_script", ""),
+        first_name=first_name,
+    )
+    if custom_greeting:
+        return custom_greeting
 
     return (
         f"Thank you for calling {bot.company_info['name']}. "
@@ -284,6 +294,8 @@ def force_complete_with_current_lead(bot):
         bot.lead["preferred_time"] = "Not collected by phone"
     if not bot.lead.get("address"):
         bot.lead["address"] = "Needs team review"
+    if not bot.lead.get("zip_code"):
+        bot.lead["zip_code"] = "Not collected by phone"
     if not bot.lead.get("system_status") and bot.lead.get("category") == "Support":
         bot.lead["system_status"] = "Needs team review"
     return bot.submit_request()
@@ -536,6 +548,7 @@ def build_notification_email_body(call_sid, lead, transcript, form_payload):
         f"Phone: {lead.get('phone', '')}",
         f"Email: {lead.get('email', '')}",
         f"Service address: {lead.get('address', '')}",
+        f"ZIP code: {lead.get('zip_code', '')}",
         f"Category: {lead.get('category', '')}",
         f"Priority: {lead.get('priority', '')}",
         f"Reason: {lead.get('issue_summary') or lead.get('issue') or ''}",
@@ -999,6 +1012,7 @@ def gather():
                 "phone": bool(bot.lead.get("phone")),
                 "phone_confirmed": bot.lead.get("phone_confirmed"),
                 "address": bool(bot.lead.get("address")),
+                "zip_code": bool(bot.lead.get("zip_code")),
                 "system_status": bool(bot.lead.get("system_status")),
                 "preferred_time": bool(bot.lead.get("preferred_time")),
                 "category": bot.lead.get("category"),
@@ -1097,6 +1111,9 @@ def review(call_sid):
       <label for="service_address">Service address</label>
       <input id="service_address" name="service_address" value="{escape(service_request.service_address if service_request else '')}">
 
+      <label for="service_zip">ZIP code</label>
+      <input id="service_zip" name="service_zip" value="{escape(service_request.service_zip if service_request else '')}">
+
       <label for="email">Email</label>
       <input id="email" name="email" value="{escape(customer.email)}">
 
@@ -1147,11 +1164,13 @@ def review_update(call_sid):
                 name=request.form.get("name", "").strip(),
                 email=request.form.get("email", "").strip(),
                 service_address=request.form.get("service_address", "").strip(),
+                service_zip=request.form.get("service_zip", "").strip(),
             )
             if service_request:
                 ServiceRequestRepository(db_session).update_review_details(
                     service_request.id,
                     service_address=request.form.get("service_address", "").strip(),
+                    service_zip=request.form.get("service_zip", "").strip(),
                     issue_summary=request.form.get("issue_summary", "").strip(),
                     preferred_time=request.form.get("preferred_time", "").strip(),
                 )
