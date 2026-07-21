@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import smtplib
 import sys
 import threading
@@ -20,7 +21,7 @@ import ai_receptionist
 
 load_dotenv()
 
-TWILIO_APP_VERSION = "atlas-hangup-email-2026-07-20"
+TWILIO_APP_VERSION = "atlas-multi-email-2026-07-21"
 
 print("LOADED AI FILE:", ai_receptionist.__file__)
 print("AI DIALOGUE VERSION:", AIReceptionist.DIALOGUE_VERSION)
@@ -504,6 +505,24 @@ def get_notification_email_for_form_payload(form_payload):
     return BUSINESS_NOTIFICATION_EMAIL
 
 
+def parse_notification_emails(raw_value):
+    if not raw_value:
+        return []
+    if isinstance(raw_value, (list, tuple, set)):
+        candidates = raw_value
+    else:
+        candidates = re.split(r"[,;\n]+", str(raw_value))
+    emails = []
+    seen = set()
+    for candidate in candidates:
+        email = str(candidate).strip()
+        if not email or email in seen:
+            continue
+        emails.append(email)
+        seen.add(email)
+    return emails
+
+
 def build_notification_email_body(call_sid, lead, transcript, form_payload):
     lines = [
         f"Atlas captured a completed call for {lead.get('company_name', 'the business')}.",
@@ -534,7 +553,7 @@ def build_notification_email_body(call_sid, lead, transcript, form_payload):
     return "\n".join(lines)
 
 
-def send_business_notification_email_via_resend(to_email, subject, body):
+def send_business_notification_email_via_resend(to_emails, subject, body):
     if not RESEND_API_KEY:
         print("[EMAIL SKIPPED] RESEND_API_KEY is missing.")
         return False
@@ -545,7 +564,7 @@ def send_business_notification_email_via_resend(to_email, subject, body):
     payload = json.dumps(
         {
             "from": SMTP_FROM_EMAIL,
-            "to": [to_email],
+            "to": to_emails,
             "subject": subject,
             "text": body,
         }
@@ -565,7 +584,7 @@ def send_business_notification_email_via_resend(to_email, subject, body):
     try:
         with url_request.urlopen(request, timeout=15) as response:
             response_body = response.read().decode("utf-8", errors="replace")
-        print("[EMAIL SENT]", {"provider": "resend", "to": to_email, "response": response_body})
+        print("[EMAIL SENT]", {"provider": "resend", "to": to_emails, "response": response_body})
         return True
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
@@ -579,7 +598,7 @@ def send_business_notification_email_via_resend(to_email, subject, body):
         return False
 
 
-def send_business_notification_email_via_smtp(to_email, subject, body):
+def send_business_notification_email_via_smtp(to_emails, subject, body):
     if not SMTP_HOST or not SMTP_FROM_EMAIL:
         print("[EMAIL SKIPPED] SMTP_HOST and SMTP_FROM_EMAIL/SMTP_USERNAME are required.")
         return False
@@ -587,7 +606,7 @@ def send_business_notification_email_via_smtp(to_email, subject, body):
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = SMTP_FROM_EMAIL
-    message["To"] = to_email
+    message["To"] = ", ".join(to_emails)
     message.set_content(body)
 
     try:
@@ -596,7 +615,7 @@ def send_business_notification_email_via_smtp(to_email, subject, body):
             if SMTP_USERNAME and SMTP_PASSWORD:
                 smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
             smtp.send_message(message)
-        print("[EMAIL SENT]", {"provider": "smtp", "to": to_email})
+        print("[EMAIL SENT]", {"provider": "smtp", "to": to_emails})
         return True
     except Exception as exc:
         print("[EMAIL ERROR]", {"provider": "smtp", "error": repr(exc)})
@@ -604,19 +623,20 @@ def send_business_notification_email_via_smtp(to_email, subject, body):
 
 
 def send_business_notification_email(call_sid, lead, transcript, form_payload):
-    to_email = get_notification_email_for_form_payload(form_payload)
-    if not to_email:
+    raw_to_email = get_notification_email_for_form_payload(form_payload)
+    to_emails = parse_notification_emails(raw_to_email)
+    if not to_emails:
         print("[EMAIL SKIPPED] BUSINESS_NOTIFICATION_EMAIL or business notification email is missing.")
         return False
 
     subject = f"New Atlas call: {lead.get('name') or form_payload.get('From', 'unknown caller')}"
     body = build_notification_email_body(call_sid, lead, transcript, form_payload)
-    print("[EMAIL ATTEMPT]", {"provider": EMAIL_PROVIDER, "to": to_email, "call_sid": call_sid})
+    print("[EMAIL ATTEMPT]", {"provider": EMAIL_PROVIDER, "to": to_emails, "call_sid": call_sid})
 
     if EMAIL_PROVIDER == "resend":
-        return send_business_notification_email_via_resend(to_email, subject, body)
+        return send_business_notification_email_via_resend(to_emails, subject, body)
 
-    return send_business_notification_email_via_smtp(to_email, subject, body)
+    return send_business_notification_email_via_smtp(to_emails, subject, body)
 
 
 def save_completed_call_to_database(call_sid, lead, transcript, form_payload):
