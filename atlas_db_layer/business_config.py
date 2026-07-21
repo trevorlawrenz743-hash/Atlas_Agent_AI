@@ -13,6 +13,8 @@ class BusinessConfig:
     notification_email: str
     timezone: str
     service_areas: str
+    greeting_script: str
+    closing_script: str
 
 
 DEFAULT_BUSINESS_CONFIG = BusinessConfig(
@@ -21,9 +23,11 @@ DEFAULT_BUSINESS_CONFIG = BusinessConfig(
     assistant_name="Atlas",
     greeting_name="ABC Heating & Air",
     industry="hvac",
-    notification_email="",
+    notification_email="trevorlawrenz743@gmail.com",
     timezone="America/Chicago",
     service_areas="Austin, Round Rock, Cedar Park, Pflugerville, Georgetown, and nearby areas",
+    greeting_script="",
+    closing_script="",
 )
 
 
@@ -41,6 +45,8 @@ def get_business_config_for_call(session, to_phone):
         notification_email=business.notification_email,
         timezone=business.timezone,
         service_areas=business.service_areas or DEFAULT_BUSINESS_CONFIG.service_areas,
+        greeting_script=getattr(business, "greeting_script", "") or "",
+        closing_script=getattr(business, "closing_script", "") or "",
     )
 
 
@@ -50,4 +56,6 @@ def apply_business_config_to_bot(bot, config: BusinessConfig):
     bot.company_info["assistant_name"] = config.assistant_name
     bot.company_info["industry"] = config.industry
     bot.company_info["notification_email"] = config.notification_email
+    bot.company_info["greeting_script"] = getattr(config, "greeting_script", "") or ""
+    bot.company_info["closing_script"] = getattr(config, "closing_script", "") or ""
     return bot
