@@ -23,6 +23,8 @@ class Business(Base):
     notification_email: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     timezone: Mapped[str] = mapped_column(String(80), default="America/Chicago", nullable=False)
     service_areas: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    greeting_script: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    closing_script: Mapped[str] = mapped_column(Text, default="", nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -58,6 +60,7 @@ class Customer(Base):
     last_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     email: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     last_service_address: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    last_service_zip: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
@@ -91,6 +94,7 @@ class ServiceRequest(Base):
     priority: Mapped[str] = mapped_column(String(40), default="Normal", nullable=False)
     issue_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
     service_address: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    service_zip: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     preferred_time: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     system_status: Mapped[str] = mapped_column(Text, default="", nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="new", nullable=False)
