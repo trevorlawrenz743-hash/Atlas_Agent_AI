@@ -21,7 +21,7 @@ class AIReceptionist:
 
         self.company_info = {
             "name": "Cheap Cold Air, Austin's HVAC Experts",
-            "hours": "Monday through Friday from 7 AM to 7 PM, emergency services are available after hours",
+            "hours": "Monday through Friday from 9 AM to 5 PM, emergency services are available after hours",
             "service_areas": (
                 "Austin, Round Rock, Cedar Park, Lakeway, Georgetown, "
                 "downtown Austin, and nearby areas"
