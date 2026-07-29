@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-sales-address-zip-2026-07-21"
+    DIALOGUE_VERSION = "atlas-new-caller-address-guard-2026-07-29"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -355,6 +355,16 @@ class AIReceptionist:
             "i need service",
             "need service",
             "i need someone",
+            "call me",
+            "call back",
+            "callback",
+            "someone call",
+            "someone call me",
+            "can someone call me",
+            "have someone call",
+            "have someone call me",
+            "follow up",
+            "someone follow up",
             "send someone",
             "come out",
             "someone to come out",
@@ -998,7 +1008,10 @@ class AIReceptionist:
                 if zip_code:
                     self.lead["zip_code"] = zip_code
             elif self.address_prompt_count >= 2:
-                self.lead["address"] = self.address_candidate or msg.strip() or "Needs team review"
+                if self.address_candidate and self.looks_like_service_location(self.address_candidate):
+                    self.lead["address"] = self.address_candidate
+                else:
+                    self.lead["address"] = "Needs team review"
                 self.lead["possible_transcription_error"] = True
                 self.lead["sms_review_required"] = True
                 return (
