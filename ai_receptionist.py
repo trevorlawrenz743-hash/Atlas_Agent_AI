@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile, get_industry_services
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-always-probe-2026-08-06"
+    DIALOGUE_VERSION = "atlas-vertex-equipment-probe-smooth-2026-08-06"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -81,6 +81,56 @@ class AIReceptionist:
             "mission-critical",
             "enterprise_hvac",
         }
+
+    def is_vertex_equipment_request(self):
+        if not self.is_vertex_profile():
+            return False
+        text = self.normalize(self.lead.get("issue_summary") or self.lead.get("issue") or "")
+        equipment_phrases = [
+            "new equipment",
+            "order equipment",
+            "order new equipment",
+            "buy equipment",
+            "purchase equipment",
+            "equipment replacement",
+            "replacement equipment",
+            "new installation",
+            "new install",
+            "upgrade",
+            "added capacity",
+            "add capacity",
+            "capacity",
+            "new system",
+            "replace",
+            "replacement",
+        ]
+        return any(phrase in text for phrase in equipment_phrases)
+
+    def looks_like_callback_time(self, msg):
+        text = self.normalize(msg)
+        time_words = [
+            "anytime",
+            "asap",
+            "soon as possible",
+            "today",
+            "tomorrow",
+            "morning",
+            "afternoon",
+            "evening",
+            "tonight",
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+            "next week",
+            "after",
+            "before",
+        ]
+        has_clock_time = bool(re.search(r"\b\d{1,2}\s*(?:am|pm|a m|p m)\b", text))
+        return has_clock_time or any(word in text for word in time_words)
 
     def render_business_script(self, script, **values):
         if not script:
@@ -1003,6 +1053,10 @@ class AIReceptionist:
         if self.current_step == "email" and control_text in {"skip", "no", "none", "no email"}:
             self.lead["email"] = "Skipped"
 
+        if self.current_step == "email" and not self.lead["email"] and self.looks_like_callback_time(msg):
+            self.lead["email"] = "Skipped"
+            self.lead["preferred_time"] = msg.strip()
+
         if self.current_step == "phone" and self.lead["phone"] and not self.lead["phone_confirmed"]:
             self.current_step = "phone_confirmation"
             self.awaiting_phone_confirmation = True
@@ -1099,11 +1153,11 @@ class AIReceptionist:
             self.awaiting_phone_confirmation = True
             return self.prompt_for_phone_confirmation()
 
-        if category in {"Support", "Sales"} and not self.lead["address"]:
+        if self.should_collect_service_location(category) and not self.lead["address"]:
             self.current_step = "address"
             return self.prompt_for_address()
 
-        if category in {"Support", "Sales"} and not self.lead["zip_code"]:
+        if self.should_collect_service_location(category) and not self.lead["zip_code"]:
             self.current_step = "zip_code"
             return self.prompt_for_zip_code()
 
@@ -1123,6 +1177,23 @@ class AIReceptionist:
             return self.ask_anything_else()
 
         return self.submit_request()
+
+    def should_collect_service_location(self, category):
+        if category in {"Support", "Sales"}:
+            return True
+        if not self.is_vertex_profile():
+            return False
+        if not (self.lead["issue_summary"] or self.lead["issue"]):
+            return False
+        if self.is_general_question_only_summary(self.lead["issue_summary"] or self.lead["issue"]):
+            return False
+        return category in {
+            "General Inquiry",
+            "Human Request",
+            "Scheduling",
+            "Complaint",
+            "Billing",
+        }
 
     def should_probe_for_operational_risk(self, category):
         if self.lead["system_status"]:
@@ -1231,6 +1302,11 @@ class AIReceptionist:
 
     def prompt_for_system_status(self):
         profile = get_industry_profile(self.company_info.get("industry"))
+        if self.is_vertex_equipment_request():
+            return (
+                "Is this replacement, new installation, upgrade, or added capacity, "
+                "and is any existing equipment currently down or alarming?"
+            )
         if self.lead["priority"] == "High":
             return (
                 "That helps. Just so the team understands the urgency, "
