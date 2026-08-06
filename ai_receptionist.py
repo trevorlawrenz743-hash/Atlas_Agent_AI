@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile, get_industry_services
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-support-elaboration-probe-2026-08-06"
+    DIALOGUE_VERSION = "atlas-vertex-title-project-size-2026-08-06"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -51,6 +51,8 @@ class AIReceptionist:
             "preferred_time": "",
             "system_status": "",
             "equipment_list": "",
+            "caller_title": "",
+            "project_size": "",
             "appointment_action": "",
             "human_requested": False,
             "existing_appointment": False,
@@ -1014,7 +1016,18 @@ class AIReceptionist:
                 return "I want the service note to be clear. What problem should the team help with?"
             return self.next_question()
 
-        if self.current_step in {"name", "phone", "email", "address", "zip_code", "preferred_time", "system_status", "equipment_list"}:
+        if self.current_step in {
+            "name",
+            "phone",
+            "email",
+            "address",
+            "zip_code",
+            "preferred_time",
+            "system_status",
+            "equipment_list",
+            "caller_title",
+            "project_size",
+        }:
             return self.advance_after_field(msg)
 
         faq_answer = self.answer_special_question(msg)
@@ -1114,6 +1127,22 @@ class AIReceptionist:
                 equipment_note,
             )
 
+        if self.current_step == "caller_title":
+            self.lead["caller_title"] = msg.strip()
+            title_note = f"Caller title/role: {msg.strip()}"
+            self.lead["issue_summary"] = self.combine_summary(
+                self.lead["issue_summary"] or self.lead["issue"],
+                title_note,
+            )
+
+        if self.current_step == "project_size":
+            self.lead["project_size"] = msg.strip()
+            project_note = f"Project size/scope: {msg.strip()}"
+            self.lead["issue_summary"] = self.combine_summary(
+                self.lead["issue_summary"] or self.lead["issue"],
+                project_note,
+            )
+
         return self.next_question()
 
     def prompt_for_current_step(self):
@@ -1131,6 +1160,10 @@ class AIReceptionist:
             return self.prompt_for_system_status()
         if self.current_step == "equipment_list":
             return self.prompt_for_equipment_list()
+        if self.current_step == "caller_title":
+            return self.prompt_for_caller_title()
+        if self.current_step == "project_size":
+            return self.prompt_for_project_size()
         if self.current_step == "email":
             return self.prompt_for_email()
         if self.current_step == "preferred_time":
@@ -1164,6 +1197,10 @@ class AIReceptionist:
             self.awaiting_phone_confirmation = True
             return self.prompt_for_phone_confirmation()
 
+        if self.should_collect_caller_title(category):
+            self.current_step = "caller_title"
+            return self.prompt_for_caller_title()
+
         if self.should_collect_service_location(category) and not self.lead["address"]:
             self.current_step = "address"
             return self.prompt_for_address()
@@ -1179,6 +1216,10 @@ class AIReceptionist:
         if self.should_collect_equipment_list(category):
             self.current_step = "equipment_list"
             return self.prompt_for_equipment_list()
+
+        if self.should_collect_project_size(category):
+            self.current_step = "project_size"
+            return self.prompt_for_project_size()
 
         if category in {"Sales", "Billing"} and not self.lead["email"]:
             self.current_step = "email"
@@ -1232,6 +1273,20 @@ class AIReceptionist:
             category == "Sales"
             and self.is_vertex_equipment_request()
             and not self.lead["equipment_list"]
+        )
+
+    def should_collect_caller_title(self, category):
+        return (
+            category == "Sales"
+            and self.is_vertex_profile()
+            and not self.lead["caller_title"]
+        )
+
+    def should_collect_project_size(self, category):
+        return (
+            category == "Sales"
+            and self.is_vertex_profile()
+            and not self.lead["project_size"]
         )
 
     def prompt_for_name(self):
@@ -1348,6 +1403,18 @@ class AIReceptionist:
             "Do you know which parts or equipment you are looking to purchase, "
             "such as CRAC, CRAH, chiller, air handler, controls, panel, switchgear, "
             "or another system?"
+        )
+
+    def prompt_for_caller_title(self):
+        return (
+            "What is your title or role with the facility, such as facilities manager, "
+            "operations director, project manager, or another role?"
+        )
+
+    def prompt_for_project_size(self):
+        return (
+            "And roughly how large is the project or site, for example one room, "
+            "multiple rooms, a full facility, campus-wide, or a budget range if you know it?"
         )
 
     def prompt_for_email(self):
