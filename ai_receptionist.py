@@ -1,11 +1,11 @@
 import re
 from datetime import datetime
 
-from industry_profiles import get_industry_profile
+from industry_profiles import get_industry_profile, get_industry_services
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-new-caller-address-guard-2026-07-29"
+    DIALOGUE_VERSION = "atlas-vertex-profile-2026-08-06"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -26,16 +26,8 @@ class AIReceptionist:
                 "Austin, Round Rock, Cedar Park, Lakeway, Georgetown, "
                 "downtown Austin, and nearby areas"
             ),
-            "services": {
-                "air conditioning": "air conditioning repair and installation",
-                "heat pump": "heat pump repair and installation",
-                "furnace": "furnace repair and installation",
-                "ductless": "ductless system installation and repair",
-                "ductwork": "ductwork installation and repair",
-                "indoor air": "indoor air services, including dehumidifier and humidifier installation and repair",
-                "thermostat": "thermostat repair and installation",
-            },
             "industry": "hvac",
+            "services": get_industry_services("hvac"),
             "assistant_name": "Atlas",
             "greeting_script": "",
             "closing_script": "",
@@ -572,6 +564,7 @@ class AIReceptionist:
         return " ".join(answers)
 
     def is_services_question(self, text):
+        profile = get_industry_profile(self.company_info.get("industry"))
         service_question_phrases = [
             "what services",
             "which services",
@@ -644,7 +637,7 @@ class AIReceptionist:
             "humidifiers",
             "thermostat",
             "thermostats",
-        ]
+        ] + profile.get("service_words", [])
         general_service_question = any(phrase in text for phrase in service_question_phrases)
         mentions_hvac_service = any(word in text for word in service_words)
         return (
@@ -655,23 +648,24 @@ class AIReceptionist:
         )
 
     def answer_services_question(self, text):
+        profile = get_industry_profile(self.company_info.get("industry"))
         services = self.company_info["services"]
         specific_services = [
-            (["heat pump", "heat pumps"], services["heat pump"]),
-            (["furnace", "furnaces"], services["furnace"]),
-            (["ductless", "mini split"], services["ductless"]),
-            (["ductwork", "duct work", "duct", "ducts", "vents"], services["ductwork"]),
-            (["indoor air", "air quality", "dehumidifier", "dehumidifiers", "humidifier", "humidifiers"], services["indoor air"]),
-            (["thermostat", "thermostats"], services["thermostat"]),
-            (["air conditioning", "ac", "a c"], services["air conditioning"]),
+            (["critical cooling", "data center cooling", "server room cooling", "computer room cooling", "crac", "crack unit", "crah"], services.get("critical cooling")),
+            (["electrical", "power", "breaker", "panel", "switchgear", "ups", "generator"], services.get("electrical")),
+            (["preventive maintenance", "pm", "maintenance contract", "service contract"], services.get("preventive maintenance")),
+            (["heat pump", "heat pumps"], services.get("heat pump")),
+            (["furnace", "furnaces"], services.get("furnace")),
+            (["ductless", "mini split"], services.get("ductless")),
+            (["ductwork", "duct work", "duct", "ducts", "vents"], services.get("ductwork")),
+            (["indoor air", "air quality", "humidity", "humidification", "dehumidifier", "dehumidifiers", "humidifier", "humidifiers"], services.get("indoor air")),
+            (["controls", "building automation", "bms", "bas", "sensor", "thermostat", "thermostats"], services.get("thermostat")),
+            (["air conditioning", "ac", "a c"], services.get("air conditioning")),
         ]
         for keywords, service in specific_services:
-            if any(self.matches_service_keyword(text, keyword) for keyword in keywords):
+            if service and any(self.matches_service_keyword(text, keyword) for keyword in keywords):
                 return f"Yes, we help with {service}."
-        return (
-            "We help with air conditioning, heat pumps, furnaces, ductless systems, "
-            "ductwork, indoor air comfort, and thermostats."
-        )
+        return profile.get("general_services_answer", "Yes, we can help with that service.")
 
     def matches_service_keyword(self, text, keyword):
         if keyword in {"ac", "a c"}:
@@ -724,7 +718,17 @@ class AIReceptionist:
             "downtown austin",
             "austin",
         ]
-        return any(phrase in text for phrase in service_area_phrases) or any(
+        matched_service_area_phrase = False
+        for phrase in service_area_phrases:
+            if phrase in {"cover", "serve"}:
+                if re.search(rf"\b{phrase}\b", text):
+                    matched_service_area_phrase = True
+                    break
+            elif phrase in text:
+                matched_service_area_phrase = True
+                break
+
+        return matched_service_area_phrase or any(
             city in text and any(word in text for word in ["service", "serve", "area", "work", "come"])
             for city in service_cities
         )
@@ -1114,11 +1118,24 @@ class AIReceptionist:
 
     def prompt_for_name(self):
         category = self.lead["category"]
+        is_vertex_profile = self.company_info.get("industry") in {
+            "vertex",
+            "mission_critical",
+            "mission-critical",
+            "enterprise_hvac",
+        }
         if category == "Support" and self.lead["priority"] == "High":
             safety_note = ""
             if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
                 self.lead["safety_note_given"] = True
                 safety_note = get_industry_profile(self.company_info.get("industry"))["safety_note"]
+            if is_vertex_profile:
+                return (
+                    "Understood. I will mark this as a high-priority facility service issue "
+                    "and capture the essentials for the right team."
+                    + safety_note
+                    + " Can I get your first and last name?"
+                )
             return (
                 "Oh no, that sounds miserable. I am glad you called. "
                 "Let me get the essentials so the right person can help."
@@ -1126,11 +1143,21 @@ class AIReceptionist:
                 + " Can I get your first and last name?"
             )
         if category == "Support":
+            if is_vertex_profile:
+                return (
+                    "Understood. I will capture the service details clearly for the facility team. "
+                    "Can I get your first and last name?"
+                )
             return (
                 "Got it. I will keep this simple and make sure the note is clear. "
                 "Can I get your first and last name?"
             )
         if category == "Sales":
+            if is_vertex_profile:
+                return (
+                    "I can route that request to the right commercial team. "
+                    "Can I get your first and last name?"
+                )
             return (
                 "Sure, I can help get that started. "
                 "Can I get your first and last name?"
@@ -1166,6 +1193,15 @@ class AIReceptionist:
 
     def prompt_for_address(self):
         self.address_prompt_count += 1
+        if self.company_info.get("industry") in {
+            "vertex",
+            "mission_critical",
+            "mission-critical",
+            "enterprise_hvac",
+        }:
+            return (
+                "Thank you. What facility name, campus, or service address is this for?"
+            )
         if self.lead["category"] == "Sales":
             return (
                 "Perfect. The location helps the team confirm the service area and prepare the right options before they call. "
@@ -1227,15 +1263,27 @@ class AIReceptionist:
 
     def intro_for_category(self):
         category = self.lead["category"]
+        is_vertex_profile = self.company_info.get("industry") in {
+            "vertex",
+            "mission_critical",
+            "mission-critical",
+            "enterprise_hvac",
+        }
         if category == "Support":
             safety_note = ""
             if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
                 self.lead["safety_note_given"] = True
                 safety_note = get_industry_profile(self.company_info.get("industry"))["safety_note"]
+            if is_vertex_profile and self.lead["priority"] == "High":
+                return "Understood. I will mark this as a high-priority facility service issue." + safety_note
+            if is_vertex_profile:
+                return "Understood. I will get this documented for the facility service team." + safety_note
             if self.lead["priority"] == "High":
                 return "I am sorry you are dealing with that. I will mark this as a high-priority service issue." + safety_note
             return "I am sorry you are dealing with that. I will get this noted for the service team." + safety_note
         if category == "Sales":
+            if is_vertex_profile:
+                return "I can route that request to the right commercial team."
             return "I would be happy to help get your quote request to the right person."
         if category == "Billing":
             return "I can help route that to the billing team."
