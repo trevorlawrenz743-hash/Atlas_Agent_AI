@@ -19,7 +19,7 @@ def main():
     parser.add_argument(
         "--industry",
         default="hvac",
-        choices=["hvac", "plumbing", "roofing", "electrical", "general"],
+        choices=["hvac", "vertex", "mission_critical", "plumbing", "roofing", "electrical", "general"],
         help="Business trade/industry profile.",
     )
     parser.add_argument("--service-areas", default="", help="Comma-separated service areas.")
