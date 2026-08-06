@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile, get_industry_services
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-vertex-equipment-probe-smooth-2026-08-06"
+    DIALOGUE_VERSION = "atlas-vertex-equipment-list-2026-08-06"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -50,6 +50,7 @@ class AIReceptionist:
             "safety_note_given": False,
             "preferred_time": "",
             "system_status": "",
+            "equipment_list": "",
             "appointment_action": "",
             "human_requested": False,
             "existing_appointment": False,
@@ -1013,7 +1014,7 @@ class AIReceptionist:
                 return "I want the service note to be clear. What problem should the team help with?"
             return self.next_question()
 
-        if self.current_step in {"name", "phone", "email", "address", "zip_code", "preferred_time", "system_status"}:
+        if self.current_step in {"name", "phone", "email", "address", "zip_code", "preferred_time", "system_status", "equipment_list"}:
             return self.advance_after_field(msg)
 
         faq_answer = self.answer_special_question(msg)
@@ -1105,6 +1106,14 @@ class AIReceptionist:
             if self.is_likely_emergency(text):
                 self.lead["priority"] = "High"
 
+        if self.current_step == "equipment_list":
+            self.lead["equipment_list"] = msg.strip()
+            equipment_note = f"Requested parts/equipment: {msg.strip()}"
+            self.lead["issue_summary"] = self.combine_summary(
+                self.lead["issue_summary"] or self.lead["issue"],
+                equipment_note,
+            )
+
         return self.next_question()
 
     def prompt_for_current_step(self):
@@ -1120,6 +1129,8 @@ class AIReceptionist:
             return self.prompt_for_zip_code()
         if self.current_step == "system_status":
             return self.prompt_for_system_status()
+        if self.current_step == "equipment_list":
+            return self.prompt_for_equipment_list()
         if self.current_step == "email":
             return self.prompt_for_email()
         if self.current_step == "preferred_time":
@@ -1164,6 +1175,10 @@ class AIReceptionist:
         if self.should_probe_for_operational_risk(category):
             self.current_step = "system_status"
             return self.prompt_for_system_status()
+
+        if self.should_collect_equipment_list(category):
+            self.current_step = "equipment_list"
+            return self.prompt_for_equipment_list()
 
         if category in {"Sales", "Billing"} and not self.lead["email"]:
             self.current_step = "email"
@@ -1211,6 +1226,13 @@ class AIReceptionist:
             "Scheduling",
             "Complaint",
         }
+
+    def should_collect_equipment_list(self, category):
+        return (
+            category == "Sales"
+            and self.is_vertex_equipment_request()
+            and not self.lead["equipment_list"]
+        )
 
     def prompt_for_name(self):
         category = self.lead["category"]
@@ -1320,6 +1342,13 @@ class AIReceptionist:
         return (
             "That helps. Just so the team has a better starting point, "
             + profile["status_question_normal"]
+        )
+
+    def prompt_for_equipment_list(self):
+        return (
+            "Do you know which parts or equipment you are looking to purchase, "
+            "such as CRAC, CRAH, chiller, air handler, controls, panel, switchgear, "
+            "or another system?"
         )
 
     def prompt_for_email(self):
