@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile, get_industry_services
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-vertex-title-project-size-2026-08-06"
+    DIALOGUE_VERSION = "atlas-broad-intent-recovery-2026-08-06"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -53,6 +53,9 @@ class AIReceptionist:
             "equipment_list": "",
             "caller_title": "",
             "project_size": "",
+            "urgency_level": "",
+            "project_timeline": "",
+            "facility_capacity": "",
             "appointment_action": "",
             "human_requested": False,
             "existing_appointment": False,
@@ -108,6 +111,103 @@ class AIReceptionist:
             "replacement",
         ]
         return any(phrase in text for phrase in equipment_phrases)
+
+    def is_name_correction_context(self, msg):
+        text = self.normalize(msg)
+        correction_phrases = [
+            "my name is",
+            "name is",
+            "this is",
+            "it is",
+            "it's",
+            "actually it is",
+            "actually it's",
+            "first of all my name",
+            "you have my name",
+            "wrong name",
+        ]
+        return any(phrase in text for phrase in correction_phrases)
+
+    def is_valid_name_correction(self, name):
+        candidate = self.clean_name_candidate(name)
+        parts = self.normalize(candidate).split()
+        blocked = {
+            "yes",
+            "no",
+            "yeah",
+            "yep",
+            "sure",
+            "okay",
+            "ok",
+            "first",
+            "name",
+            "phone",
+            "address",
+            "service",
+            "equipment",
+            "purchase",
+            "austin",
+            "texas",
+            "repair",
+            "install",
+            "installed",
+            "working",
+            "down",
+            "unit",
+            "system",
+            "crac",
+            "crah",
+            "equipment",
+        }
+        return 1 <= len(parts) <= 4 and not any(part in blocked for part in parts)
+
+    def extract_name_correction(self, msg):
+        patterns = [
+            r"(?:first of all,\s*)?my name is ([a-zA-Z\s]+?)(?:,|\.| and |$)",
+            r"(?:actually,\s*)?(?:it is|it's) ([a-zA-Z\s]+?)(?:,|\.| and |$)",
+            r"(?:actually,\s*)?this is ([a-zA-Z\s]+?)(?:,|\.| and |$)",
+            r"name is ([a-zA-Z\s]+?)(?:,|\.| and |$)",
+            r"not [a-zA-Z]+,\s*([a-zA-Z\s]+?)(?:,|\.| and |$)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, msg, re.IGNORECASE)
+            if match:
+                candidate = self.clean_name_candidate(match.group(1))
+                if self.is_valid_name_correction(candidate):
+                    return candidate.title()
+        return None
+
+    def apply_name_correction_if_present(self, msg):
+        if not self.is_name_correction_context(msg):
+            return None
+        text = self.normalize(msg)
+        if self.contains_actionable_intent(text) and "name" not in text:
+            return None
+        corrected_name = self.extract_name_correction(msg)
+        if not corrected_name:
+            return None
+        existing_parts = self.lead.get("name", "").split()
+        if len(corrected_name.split()) == 1 and len(existing_parts) > 1:
+            corrected_name = " ".join([corrected_name, *existing_parts[1:]])
+        self.lead["name"] = corrected_name
+        self.lead["possible_transcription_error"] = True
+        return corrected_name
+
+    def contains_actionable_intent(self, text):
+        text = self.normalize(text)
+        profile = get_industry_profile(self.company_info.get("industry"))
+        return self.contains_any(text, profile["sales_keywords"]) or self.contains_any(
+            text, profile["support_keywords"]
+        )
+
+    def should_reclassify_field_as_new_issue(self, msg):
+        text = self.normalize(msg)
+        if not self.contains_actionable_intent(text):
+            return False
+        current_issue = self.normalize(self.lead.get("issue_summary") or self.lead.get("issue") or "")
+        if self.lead.get("category") in {"", "General Inquiry"}:
+            return True
+        return self.is_name_correction_context(current_issue) or self.is_vague_issue(current_issue)
 
     def looks_like_callback_time(self, msg):
         text = self.normalize(msg)
@@ -558,6 +658,24 @@ class AIReceptionist:
         text = re.sub(r"\s+", " ", text).strip(" .,-")
         lower = text.lower()
         issue_starts = [
+            "i want to purchase",
+            "i want to buy",
+            "i want to order",
+            "i want to install",
+            "i need to purchase",
+            "i need to buy",
+            "i need to order",
+            "i need to install",
+            "i need a new",
+            "we want to purchase",
+            "we want to buy",
+            "we want to order",
+            "we want to install",
+            "we need to purchase",
+            "we need to buy",
+            "we need to order",
+            "we need to install",
+            "we need a new",
             "my ac",
             "my air",
             "my heat",
@@ -969,6 +1087,15 @@ class AIReceptionist:
         self.extract_fields(msg)
         self.update_context(msg)
 
+        corrected_name = self.apply_name_correction_if_present(msg)
+        if corrected_name:
+            self.lead["issue"] = ""
+            self.lead["issue_summary"] = ""
+            self.lead["category"] = ""
+            self.current_step = "greeting"
+            first_name = corrected_name.split()[0]
+            return f"Thank you for correcting that, {first_name}. How can I help you today?"
+
         if self.current_step == "complete":
             return "Your request has already been submitted. A member of our team will follow up soon."
 
@@ -1027,6 +1154,9 @@ class AIReceptionist:
             "equipment_list",
             "caller_title",
             "project_size",
+            "urgency_level",
+            "project_timeline",
+            "facility_capacity",
         }:
             return self.advance_after_field(msg)
 
@@ -1064,6 +1194,29 @@ class AIReceptionist:
         if faq_answer and self.is_question_only(msg):
             return faq_answer + " " + self.prompt_for_current_step()
 
+        if self.current_step in {
+            "system_status",
+            "equipment_list",
+            "caller_title",
+            "project_size",
+            "urgency_level",
+            "project_timeline",
+            "facility_capacity",
+            "email",
+            "preferred_time",
+        } and self.should_reclassify_field_as_new_issue(msg):
+            clean_reason = self.clean_customer_reason(msg)
+            self.lead["issue"] = clean_reason
+            self.lead["issue_summary"] = clean_reason
+            self.lead["system_status"] = ""
+            self.lead["equipment_list"] = ""
+            self.lead["project_timeline"] = ""
+            self.lead["project_size"] = ""
+            self.lead["facility_capacity"] = ""
+            self.lead["urgency_level"] = ""
+            self.classify_issue(clean_reason)
+            return self.next_question()
+
         if self.current_step == "email" and control_text in {"skip", "no", "none", "no email"}:
             self.lead["email"] = "Skipped"
 
@@ -1082,7 +1235,7 @@ class AIReceptionist:
                 zip_code = self.extract_zip_code(msg)
                 if zip_code:
                     self.lead["zip_code"] = zip_code
-            elif self.lead["category"] == "Sales" and self.looks_like_service_location(msg):
+            elif (self.lead["category"] == "Sales" or self.is_vertex_profile()) and self.looks_like_service_location(msg):
                 self.lead["address"] = msg.strip()
                 zip_code = self.extract_zip_code(msg)
                 if zip_code:
@@ -1143,6 +1296,32 @@ class AIReceptionist:
                 project_note,
             )
 
+        if self.current_step == "urgency_level":
+            self.lead["urgency_level"] = msg.strip()
+            urgency_note = f"Urgency level: {msg.strip()}"
+            self.lead["issue_summary"] = self.combine_summary(
+                self.lead["issue_summary"] or self.lead["issue"],
+                urgency_note,
+            )
+            if self.is_likely_emergency(text):
+                self.lead["priority"] = "High"
+
+        if self.current_step == "project_timeline":
+            self.lead["project_timeline"] = msg.strip()
+            timeline_note = f"Project timeline: {msg.strip()}"
+            self.lead["issue_summary"] = self.combine_summary(
+                self.lead["issue_summary"] or self.lead["issue"],
+                timeline_note,
+            )
+
+        if self.current_step == "facility_capacity":
+            self.lead["facility_capacity"] = msg.strip()
+            capacity_note = f"Facility capacity: {msg.strip()}"
+            self.lead["issue_summary"] = self.combine_summary(
+                self.lead["issue_summary"] or self.lead["issue"],
+                capacity_note,
+            )
+
         return self.next_question()
 
     def prompt_for_current_step(self):
@@ -1164,6 +1343,12 @@ class AIReceptionist:
             return self.prompt_for_caller_title()
         if self.current_step == "project_size":
             return self.prompt_for_project_size()
+        if self.current_step == "urgency_level":
+            return self.prompt_for_urgency_level()
+        if self.current_step == "project_timeline":
+            return self.prompt_for_project_timeline()
+        if self.current_step == "facility_capacity":
+            return self.prompt_for_facility_capacity()
         if self.current_step == "email":
             return self.prompt_for_email()
         if self.current_step == "preferred_time":
@@ -1213,13 +1398,25 @@ class AIReceptionist:
             self.current_step = "system_status"
             return self.prompt_for_system_status()
 
+        if self.should_collect_urgency_level(category):
+            self.current_step = "urgency_level"
+            return self.prompt_for_urgency_level()
+
         if self.should_collect_equipment_list(category):
             self.current_step = "equipment_list"
             return self.prompt_for_equipment_list()
 
+        if self.should_collect_project_timeline(category):
+            self.current_step = "project_timeline"
+            return self.prompt_for_project_timeline()
+
         if self.should_collect_project_size(category):
             self.current_step = "project_size"
             return self.prompt_for_project_size()
+
+        if self.should_collect_facility_capacity(category):
+            self.current_step = "facility_capacity"
+            return self.prompt_for_facility_capacity()
 
         if category in {"Sales", "Billing"} and not self.lead["email"]:
             self.current_step = "email"
@@ -1288,6 +1485,83 @@ class AIReceptionist:
             and self.is_vertex_profile()
             and not self.lead["project_size"]
         )
+
+    def should_collect_urgency_level(self, category):
+        if self.lead["urgency_level"]:
+            return False
+        issue_text = self.normalize(self.lead.get("issue_summary") or self.lead.get("issue") or "")
+        no_active_issue_phrases = [
+            "not an issue",
+            "no issue",
+            "no problem",
+            "nothing down",
+            "nothing is down",
+            "not down",
+            "not alarming",
+            "nothing alarming",
+            "planning only",
+            "planning ahead",
+        ]
+        if any(phrase in issue_text for phrase in no_active_issue_phrases):
+            return False
+        if category == "Sales" and self.is_vertex_equipment_request():
+            return False
+        if category == "Support":
+            return True
+        if not self.is_vertex_profile():
+            return False
+        maintenance_problem_words = [
+            "maintenance",
+            "repair",
+            "problem",
+            "issue",
+            "down",
+            "not working",
+            "alarm",
+            "alarming",
+            "overheating",
+            "hot",
+            "warm",
+            "losing power",
+            "outage",
+        ]
+        return any(word in issue_text for word in maintenance_problem_words)
+
+    def should_collect_project_timeline(self, category):
+        return (
+            category == "Sales"
+            and self.is_vertex_equipment_request()
+            and not self.lead["project_timeline"]
+        )
+
+    def should_collect_facility_capacity(self, category):
+        if self.lead["facility_capacity"]:
+            return False
+        if not self.is_vertex_profile():
+            return False
+        if category not in {"Support", "Sales", "General Inquiry", "Human Request", "Scheduling", "Complaint"}:
+            return False
+        text = self.normalize(
+            " ".join(
+                [
+                    self.lead.get("issue_summary") or self.lead.get("issue") or "",
+                    self.lead.get("address") or "",
+                    self.lead.get("system_status") or "",
+                    self.lead.get("project_size") or "",
+                ]
+            )
+        )
+        data_center_words = [
+            "data center",
+            "datacenter",
+            "data hall",
+            "server room",
+            "computer room",
+            "mission critical",
+            "critical facility",
+            "tech campus",
+        ]
+        return any(word in text for word in data_center_words)
 
     def prompt_for_name(self):
         category = self.lead["category"]
@@ -1415,6 +1689,29 @@ class AIReceptionist:
         return (
             "And roughly how large is the project or site, for example one room, "
             "multiple rooms, a full facility, campus-wide, or a budget range if you know it?"
+        )
+
+    def prompt_for_urgency_level(self):
+        if self.is_vertex_profile():
+            return (
+                "How urgent is this: emergency, same-day, this week, scheduled maintenance, "
+                "or planning only?"
+            )
+        return (
+            "How urgent is this: emergency, today, this week, routine maintenance, "
+            "or just planning ahead?"
+        )
+
+    def prompt_for_project_timeline(self):
+        return (
+            "What is the project timeline, such as immediate replacement, this quarter, "
+            "this year, or still in planning?"
+        )
+
+    def prompt_for_facility_capacity(self):
+        return (
+            "If you know it, what is the facility capacity, such as megawatts and "
+            "data capacity in gigabytes?"
         )
 
     def prompt_for_email(self):
