@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from industry_profiles import get_industry_services
 from repositories import BusinessRepository
 
 
@@ -55,6 +56,7 @@ def apply_business_config_to_bot(bot, config: BusinessConfig):
     bot.company_info["service_areas"] = config.service_areas
     bot.company_info["assistant_name"] = config.assistant_name
     bot.company_info["industry"] = config.industry
+    bot.company_info["services"] = get_industry_services(config.industry)
     bot.company_info["notification_email"] = config.notification_email
     bot.company_info["greeting_script"] = getattr(config, "greeting_script", "") or ""
     bot.company_info["closing_script"] = getattr(config, "closing_script", "") or ""
