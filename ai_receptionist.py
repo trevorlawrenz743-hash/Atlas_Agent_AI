@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile, get_industry_services
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-vertex-profile-2026-08-06"
+    DIALOGUE_VERSION = "atlas-always-probe-2026-08-06"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -73,6 +73,14 @@ class AIReceptionist:
     def contains_any(self, text, phrases):
         normalized = self.normalize(text)
         return any(phrase in normalized for phrase in phrases)
+
+    def is_vertex_profile(self):
+        return self.company_info.get("industry") in {
+            "vertex",
+            "mission_critical",
+            "mission-critical",
+            "enterprise_hvac",
+        }
 
     def render_business_script(self, script, **values):
         if not script:
@@ -1099,7 +1107,7 @@ class AIReceptionist:
             self.current_step = "zip_code"
             return self.prompt_for_zip_code()
 
-        if category == "Support" and not self.lead["system_status"]:
+        if self.should_probe_for_operational_risk(category):
             self.current_step = "system_status"
             return self.prompt_for_system_status()
 
@@ -1116,14 +1124,26 @@ class AIReceptionist:
 
         return self.submit_request()
 
+    def should_probe_for_operational_risk(self, category):
+        if self.lead["system_status"]:
+            return False
+        if category == "Support":
+            return True
+        if not (self.lead["issue_summary"] or self.lead["issue"]):
+            return False
+        if self.is_general_question_only_summary(self.lead["issue_summary"] or self.lead["issue"]):
+            return False
+        return category in {
+            "Sales",
+            "General Inquiry",
+            "Human Request",
+            "Scheduling",
+            "Complaint",
+        }
+
     def prompt_for_name(self):
         category = self.lead["category"]
-        is_vertex_profile = self.company_info.get("industry") in {
-            "vertex",
-            "mission_critical",
-            "mission-critical",
-            "enterprise_hvac",
-        }
+        is_vertex_profile = self.is_vertex_profile()
         if category == "Support" and self.lead["priority"] == "High":
             safety_note = ""
             if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
@@ -1193,12 +1213,7 @@ class AIReceptionist:
 
     def prompt_for_address(self):
         self.address_prompt_count += 1
-        if self.company_info.get("industry") in {
-            "vertex",
-            "mission_critical",
-            "mission-critical",
-            "enterprise_hvac",
-        }:
+        if self.is_vertex_profile():
             return (
                 "Thank you. What facility name, campus, or service address is this for?"
             )
@@ -1220,6 +1235,11 @@ class AIReceptionist:
             return (
                 "That helps. Just so the team understands the urgency, "
                 + profile["status_question_high"]
+            )
+        if self.is_vertex_profile():
+            return (
+                "Before I route this, is anything down, alarming, overheating, losing power, "
+                "or affecting critical equipment right now?"
             )
         return (
             "That helps. Just so the team has a better starting point, "
@@ -1263,12 +1283,7 @@ class AIReceptionist:
 
     def intro_for_category(self):
         category = self.lead["category"]
-        is_vertex_profile = self.company_info.get("industry") in {
-            "vertex",
-            "mission_critical",
-            "mission-critical",
-            "enterprise_hvac",
-        }
+        is_vertex_profile = self.is_vertex_profile()
         if category == "Support":
             safety_note = ""
             if self.lead["danger_flag"] and not self.lead["safety_note_given"]:
