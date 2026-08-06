@@ -5,7 +5,7 @@ from industry_profiles import get_industry_profile, get_industry_services
 
 
 class AIReceptionist:
-    DIALOGUE_VERSION = "atlas-vertex-equipment-list-2026-08-06"
+    DIALOGUE_VERSION = "atlas-support-elaboration-probe-2026-08-06"
 
     def __init__(self, use_llm_classifier=False):
         self.use_llm_classifier = use_llm_classifier
@@ -1336,12 +1336,11 @@ class AIReceptionist:
             )
         if self.is_vertex_profile():
             return (
-                "Before I route this, is anything down, alarming, overheating, losing power, "
-                "or affecting critical equipment right now?"
+                "To help the team triage this correctly, what equipment or area is affected, "
+                "and what is it doing or not doing?"
             )
         return (
-            "That helps. Just so the team has a better starting point, "
-            + profile["status_question_normal"]
+            "That helps. To make the repair note clearer, what is the system doing or not doing?"
         )
 
     def prompt_for_equipment_list(self):
