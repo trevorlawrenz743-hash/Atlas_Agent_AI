@@ -163,7 +163,7 @@ INDUSTRY_PROFILES = {
             "unit down",
             "unit is down",
             "system down",
-            "equipment down",
+            "equipment  down",
             "crac",
             "crack unit",
             "crack unit down",
